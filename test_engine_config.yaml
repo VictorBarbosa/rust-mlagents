@@ -1,0 +1,31 @@
+behaviors:
+  TestAgent:
+    trainer_type: ppo
+    hyperparameters:
+      batch_size: 64
+      buffer_size: 2048
+      learning_rate: 0.0003
+    network_settings:
+      hidden_units: 128
+      num_layers: 2
+    max_steps: 100
+    time_horizon: 64
+
+environment_parameters:
+  currentLesson: 5
+  maxHorizontal: 4.0
+
+engine_settings:
+  width: 1024
+  height: 768
+  quality_level: 3
+  time_scale: 50.0
+  target_frame_rate: 60
+  capture_frame_rate: 60
+
+env_settings:
+  base_port: 5004
+  num_envs: 1
+
+torch_settings:
+  device: cpu

@@ -1,0 +1,20 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+serde_yaml = "0.9"
+rl_core = { path = "../rl_core" }
+burn = "0.18"
+burn-ndarray = "0.18"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+
+[[bin]]
+name = "rust-mlagents-learn"
+path = "src/main.rs"

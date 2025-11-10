@@ -1,0 +1,43 @@
+:host {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 24px;
+  height: 100vh;
+  box-sizing: border-box;
+}
+
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: 100%;
+  max-width: 600px;
+}
+
+.card {
+  width: 100%;
+}
+
+mat-card-content {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+mat-form-field {
+  width: 100%;
+}
+
+.control-buttons {
+  flex-direction: row;
+  justify-content: center;
+  gap: 10px;
+}
+
+.status-text {
+  font-size: 1.2em;
+  font-weight: 500;
+  text-align: center;
+  padding: 10px 0;
+}

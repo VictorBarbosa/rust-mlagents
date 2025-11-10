@@ -1,0 +1,20 @@
+[package]
+name = "rl_core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1.0"
+tonic = "0.11"
+prost = "0.12"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+# Burn ML Framework
+burn = { version = "0.18", features = ["train", "ndarray"] }
+burn-autodiff = { version = "0.18" }
+burn-ndarray = { version = "0.18" }
+
+[build-dependencies]
+tonic-build = { version = "0.11", features = ["prost"] }

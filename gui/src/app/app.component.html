@@ -1,0 +1,46 @@
+<div class="container">
+
+  <mat-card class="card">
+    <mat-card-header>
+      <mat-card-title>Configurações de Treinamento</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <mat-form-field appearance="fill">
+        <mat-label>Taxa de Aprendizado (Learning Rate)</mat-label>
+        <input matInput type="number" [(ngModel)]="learningRate">
+      </mat-form-field>
+
+      <mat-form-field appearance="fill">
+        <mat-label>Gamma</mat-label>
+        <input matInput type="number" [(ngModel)]="gamma">
+      </mat-form-field>
+
+      <mat-form-field appearance="fill">
+        <mat-label>Epsilon</mat-label>
+        <input matInput type="number" [(ngModel)]="epsilon">
+      </mat-form-field>
+    </mat-card-content>
+  </mat-card>
+
+  <mat-card class="card">
+    <mat-card-header>
+      <mat-card-title>Controle</mat-card-title>
+    </mat-card-header>
+    <mat-card-content class="control-buttons">
+      <button mat-raised-button color="primary" (click)="startTraining()">Iniciar</button>
+      <button mat-raised-button color="accent" (click)="pauseTraining()">Pausar</button>
+      <button mat-raised-button color="warn" (click)="resetTraining()">Reiniciar</button>
+    </mat-card-content>
+  </mat-card>
+
+  <mat-card class="card">
+    <mat-card-header>
+      <mat-card-title>Status</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <p class="status-text">{{ status }}</p>
+    </mat-card-content>
+  </mat-card>
+
+</div>
+

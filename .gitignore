@@ -1,0 +1,17 @@
+./target
+./gui/.angular
+./gui/node_modules
+./cli/target
+./rl-core/target
+./rl-trainers/target
+./rl-envs/target
+./**/*.rs.bk
+./**/*.log
+./**/*.sqlite
+./**/*.sqlite-shm
+./**/*.sqlite-wal
+./**/*.pyc
+./**/__pycache__/
+./**/.DS_Store
+target/
+target

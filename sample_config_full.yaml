@@ -1,0 +1,51 @@
+# Complete training configuration for rust-mlagents
+# Full parameter compatibility with mlagents-learn original
+behaviors:
+  MoonlanderAgent:
+    trainer_type: ppo
+    hyperparameters:
+      batch_size: 256
+      buffer_size: 2048
+      learning_rate: 0.0003
+      learning_rate_schedule: linear
+      beta: 0.01            # entropy coefficient
+      epsilon: 0.2          # PPO clip parameter
+      lambd: 0.95           # GAE lambda
+      num_epoch: 3          # epochs per update
+    checkpoint_interval: 1000
+    network_settings:
+      normalize: true
+      hidden_units: 128
+      num_layers: 2
+    reward_signals:
+      extrinsic:
+        gamma: 0.99
+        strength: 1.0
+    keep_checkpoints: 5
+    max_steps: 5000          # Total training steps
+    time_horizon: 64         # Buffer fills after this many steps
+    summary_freq: 100        # Log stats every N steps
+env_settings:
+  env_path: "/Users/victorbarbosa/git/UNITY Web/UnityMoonLander/Mac/App.app"
+  base_port: 5004
+  num_envs: 2
+  num_areas: 1
+  seed: 42
+  timeout_wait: 60
+engine_settings:
+  width: 84
+  height: 84
+  quality_level: 5
+  time_scale: 100.0
+  target_frame_rate: -1
+  no_graphics: true
+checkpoint_settings:
+  run_id: "moonlander-ppo"
+  results_dir: "results"
+  train_model: true
+  inference: false
+torch_settings:
+  device: "cpu"
+environment_parameters:
+  currentLesson: 5
+debug: false
