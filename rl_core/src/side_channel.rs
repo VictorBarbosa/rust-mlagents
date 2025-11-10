@@ -51,6 +51,10 @@ impl OutgoingMessage {
         self.buffer.extend_from_slice(&value.to_le_bytes());
     }
 
+    fn write_bool(&mut self, value: bool) {
+        self.write_int32(if value { 1 } else { 0 });
+    }
+
     fn write_string(&mut self, s: &str) {
         let encoded = s.as_bytes();
         self.write_int32(encoded.len() as i32);
@@ -133,6 +137,7 @@ pub struct EngineConfig {
     pub time_scale: f32,
     pub target_frame_rate: i32,
     pub capture_frame_rate: i32,
+    pub no_graphics: bool,
 }
 
 impl Default for EngineConfig {
@@ -144,6 +149,7 @@ impl Default for EngineConfig {
             time_scale: 20.0,
             target_frame_rate: -1,
             capture_frame_rate: 60,
+            no_graphics: false,
         }
     }
 }
@@ -160,6 +166,7 @@ impl Default for EngineConfig {
 ///   - time_scale (f32)
 ///   - target_frame_rate (i32)
 ///   - capture_frame_rate (i32)
+///   - no_graphics (i32: 1 for true, 0 for false)
 pub fn serialize_engine_config(config: &EngineConfig) -> Vec<u8> {
     let mut msg = OutgoingMessage::new();
     
@@ -170,6 +177,7 @@ pub fn serialize_engine_config(config: &EngineConfig) -> Vec<u8> {
     msg.write_float32(config.time_scale);
     msg.write_int32(config.target_frame_rate);
     msg.write_int32(config.capture_frame_rate);
+    msg.write_bool(config.no_graphics);
     
     let message_bytes = msg.into_bytes();
     

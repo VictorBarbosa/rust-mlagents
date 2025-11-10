@@ -150,7 +150,6 @@ async fn run_training_loop(
             .and_then(|es| es.environment_parameters.clone()))
         .unwrap_or_default();
     
-    // Build engine configuration from YAML + CLI args
     let engine_config = rl_core::side_channel::EngineConfig {
         width: config.engine_settings.as_ref().map(|e| e.width).unwrap_or(args.width),
         height: config.engine_settings.as_ref().map(|e| e.height).unwrap_or(args.height),
@@ -158,6 +157,7 @@ async fn run_training_loop(
         time_scale: config.engine_settings.as_ref().map(|e| e.time_scale).unwrap_or(args.time_scale),
         target_frame_rate: config.engine_settings.as_ref().map(|e| e.target_frame_rate).unwrap_or(args.target_frame_rate),
         capture_frame_rate: config.engine_settings.as_ref().map(|e| e.capture_frame_rate).unwrap_or(args.capture_frame_rate),
+        no_graphics: config.engine_settings.as_ref().map(|e| e.no_graphics).unwrap_or(args.no_graphics),
     };
     
     // Combine side channels (always send engine config, optionally send env params)
@@ -319,6 +319,11 @@ async fn run_training_loop(
     let mut total_reward_sum = 0.0;
     let mut total_episodes = 0;
     
+    // Track previous observation, action, and value for experience collection
+    let mut prev_obs: Vec<f32> = vec![];
+    let mut prev_action: Vec<f32> = vec![];
+    let mut prev_value: f32 = 0.0;
+    
     for step in 1..=max_steps {
         // Parse observations from all agents
         let rl_output = current_output.rl_output.as_ref().unwrap();
@@ -344,6 +349,9 @@ async fn run_training_loop(
                     })
                     .collect();
                 
+                // Store observation for transition (we'll use it for the next step)
+                prev_obs = obs.clone();
+                
                 // Generate action with policy and get value estimate
                 let obs_tensor = Tensor::<NdArray, 1>::from_floats(obs.as_slice(), &device)
                     .reshape([1, obs.len()]);
@@ -353,8 +361,12 @@ async fn run_training_loop(
                 let actions: Vec<f32> = action_data.to_vec().unwrap();
                 
                 let value_data = value_tensor.to_data();
-                let _value: f32 = value_data.to_vec().unwrap()[0];
+                let value: f32 = value_data.to_vec().unwrap_or_else(|_| vec![0.0])[0];
                 
+                // Store action and value for transition
+                prev_action = actions.clone();
+                prev_value = value;
+
                 // Create action proto (new format with continuous_actions)
                 let action_proto = rl_core::communicator_objects::AgentActionProto {
                     vector_actions_deprecated: vec![],
@@ -392,21 +404,19 @@ async fn run_training_loop(
         let mut step_reward = 0.0;
         let mut step_done = false;
         
-        // We need to extract the observations and actions we just computed
-        // For now, extract from the first agent in the first behavior
+        // Extract rewards and done status from the response
         if let Some((_behavior_name, agent_list)) = step_rl_output.agent_infos.iter().next() {
             if let Some(agent_info) = agent_list.value.first() {
                 step_reward = agent_info.reward;
                 step_done = agent_info.done;
                 
-                // Extract observations from the previous step (we need to track these)
-                // For now, skip buffer storage to avoid dimension mismatch
-                // The PPO update is disabled anyway until we properly track obs/actions per step
-                
-                // Note: To properly implement this, we'd need to:
-                // 1. Store (obs, action, value, log_prob) when generating actions
-                // 2. Then add (reward, done) when receiving the response
-                // 3. This requires refactoring the loop structure
+                // Store the transition (observation, action, reward, value, done) in the buffer
+                // This fixes the single environment loop to properly store experiences
+                buffer.observations.push(prev_obs.clone());
+                buffer.actions.push(prev_action.clone());
+                buffer.rewards.push(step_reward);
+                buffer.values.push(prev_value);
+                buffer.dones.push(step_done);
             }
         }
         
@@ -531,6 +541,7 @@ async fn run_multi_env_training_loop(
         time_scale: config.engine_settings.as_ref().map(|e| e.time_scale).unwrap_or(args.time_scale),
         target_frame_rate: config.engine_settings.as_ref().map(|e| e.target_frame_rate).unwrap_or(args.target_frame_rate),
         capture_frame_rate: config.engine_settings.as_ref().map(|e| e.capture_frame_rate).unwrap_or(args.capture_frame_rate),
+        no_graphics: config.engine_settings.as_ref().map(|e| e.no_graphics).unwrap_or(args.no_graphics),
     };
     
     let mut side_channels = vec![rl_core::side_channel::serialize_engine_config(&engine_config)];
@@ -676,11 +687,16 @@ async fn run_multi_env_training_loop(
     // Per-environment episode rewards
     let mut env_episode_rewards = vec![0.0; num_envs];
     
+    // Track previous observations and actions for each environment to build transitions
+    let mut prev_obs_per_env = vec![Vec::new(); num_envs];
+    let mut prev_actions_per_env = vec![Vec::new(); num_envs];
+    let mut prev_values_per_env = vec![0.0f32; num_envs];
+    
     for step in 1..=max_steps {
         // Generate actions for all environments using the SAME policy
         let mut all_actions = Vec::new();
         
-        for (_env_idx, output) in current_outputs.iter().enumerate() {
+        for (env_idx, output) in current_outputs.iter().enumerate() {
             let rl_output = output.rl_output.as_ref().unwrap();
             
             let mut agent_actions = HashMap::new();
@@ -703,14 +719,27 @@ async fn run_multi_env_training_loop(
                         })
                         .collect();
                     
+                    // Store observation for transition (we'll use it for the next step)
+                    prev_obs_per_env[env_idx] = obs.clone();
+
                     // Generate action using shared policy
                     let obs_tensor = Tensor::<NdArray, 1>::from_floats(obs.as_slice(), &device)
                         .reshape([1, obs.len()]);
                     
-                    let (action_tensor, _value_tensor, _log_prob) = trainer.get_action_and_value(obs_tensor);
+                    let (action_tensor, value_tensor, _log_prob) = trainer.get_action_and_value(obs_tensor);
+                    
+                    // Extract action
                     let action_data = action_tensor.to_data();
                     let actions: Vec<f32> = action_data.to_vec().unwrap();
                     
+                    // Extract value for advantage calculation
+                    let value_data = value_tensor.to_data();
+                    let value: f32 = value_data.to_vec().unwrap_or_else(|_| vec![0.0])[0];
+                    
+                    // Store action and value for transition
+                    prev_actions_per_env[env_idx] = actions.clone();
+                    prev_values_per_env[env_idx] = value;
+
                     let action_proto = rl_core::communicator_objects::AgentActionProto {
                         vector_actions_deprecated: vec![],
                         value: 0.0,
@@ -742,43 +771,78 @@ async fn run_multi_env_training_loop(
         }
         
         // Step all environments in parallel and collect experiences
-        current_outputs = multi_env.step_all(all_actions).await?;
+        match multi_env.step_all(all_actions).await {
+            Ok(outputs) => {
+                current_outputs = outputs;
+                if args.debug && step % 100 == 0 {  // Only log every 100 steps to reduce verbosity
+                    println!("[debug] Successfully stepped {} environments", current_outputs.len());
+                }
+            },
+            Err(e) => {
+                eprintln!("[error] Failed to step environments: {}", e);
+                break; // Exit training loop on environment error
+            }
+        }
         
             // Collect rewards and experiences from all environments (aggregate for batch training)
         let mut total_step_reward = 0.0;
         let mut any_done = false;
         
         for (env_idx, output) in current_outputs.iter().enumerate() {
-            let step_rl_output = output.rl_output.as_ref().unwrap();
-            
-            if let Some((_, agent_list)) = step_rl_output.agent_infos.iter().next() {
-                if let Some(agent_info) = agent_list.value.first() {
-                    let step_reward = agent_info.reward;
-                    let step_done = agent_info.done;
-                    
-                    // TODO: Extract observations and store in buffer for training
-                    // Currently we generate actions on-the-fly but don't store trajectories
-                    // Proper PPO requires: (obs, action, reward, value, log_prob, done) tuples
-                    // For now, just collect rewards for monitoring
-                    
-                    env_episode_rewards[env_idx] += step_reward;
-                    total_step_reward += step_reward;
-                    
-                    if step_done {
-                        total_reward_sum += env_episode_rewards[env_idx];
-                        total_episodes += 1;
+            if let Some(ref step_rl_output) = output.rl_output {
+                if let Some((_, agent_list)) = step_rl_output.agent_infos.iter().next() {
+                    if let Some(agent_info) = agent_list.value.first() {
+                        let step_reward = agent_info.reward;
+                        let step_done = agent_info.done;
                         
-                        if args.debug {
-                            println!("  ✓ [Env-{} | Port {}] Episode complete: reward={:.2}, avg={:.2}", 
-                                     env_idx + 1, 
-                                     base_port + env_idx as u16,
-                                     env_episode_rewards[env_idx], 
-                                     total_reward_sum / total_episodes as f32);
+                        // Store the transition (observation, action, reward, value, done) in the buffer
+                        // This is the critical fix: we now properly store experiences for training
+                        let obs = prev_obs_per_env[env_idx].clone();
+                        let action = prev_actions_per_env[env_idx].clone();
+                        let value = prev_values_per_env[env_idx];
+                        
+                        // Add the experience to the shared buffer
+                        buffer.observations.push(obs);
+                        buffer.actions.push(action);
+                        buffer.rewards.push(step_reward);
+                        buffer.values.push(value);
+                        buffer.dones.push(step_done);
+                        
+                        env_episode_rewards[env_idx] += step_reward;
+                        total_step_reward += step_reward;
+
+                        if args.debug && step_reward != 0.0 && step % 50 == 0 {  // Only log non-zero rewards periodically
+                            println!("[debug] Env {} reward: {:.3}, done: {}", env_idx + 1, step_reward, step_done);
                         }
                         
-                        env_episode_rewards[env_idx] = 0.0;
-                        any_done = true;
+                        if step_done {
+                            total_reward_sum += env_episode_rewards[env_idx];
+                            total_episodes += 1;
+                            
+                            if args.debug {
+                                println!("  ✓ [Env-{} | Port {}] Episode complete: reward={:.2}, avg={:.2}", 
+                                         env_idx + 1, 
+                                         base_port + env_idx as u16,
+                                         env_episode_rewards[env_idx], 
+                                         total_reward_sum / total_episodes as f32);
+                            }
+                            
+                            env_episode_rewards[env_idx] = 0.0;
+                            any_done = true;
+                        }
+                    } else {
+                        if args.debug {
+                            println!("[debug] Environment {} has no agents in first behavior", env_idx + 1);
+                        }
                     }
+                } else {
+                    if args.debug {
+                        println!("[debug] Environment {} has no agent info", env_idx + 1);
+                    }
+                }
+            } else {
+                if args.debug {
+                    println!("[debug] Environment {} returned no RL output", env_idx + 1);
                 }
             }
         }
