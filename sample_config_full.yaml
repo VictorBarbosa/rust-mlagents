@@ -12,7 +12,7 @@ behaviors:
       epsilon: 0.2          # PPO clip parameter
       lambd: 0.95           # GAE lambda
       num_epoch: 3          # epochs per update
-    checkpoint_interval: 1000
+    checkpoint_interval: 000
     network_settings:
       normalize: true
       hidden_units: 128

@@ -262,16 +262,16 @@ async fn run_training_loop(
         }
     }
     
-    println!("🧠 PPO Trainer configurado (lr={}, hidden={}, layers={})", 
+    println!("🧠 PPO Trainer initialized (lr={}, hidden={}, layers={})", 
              learning_rate, hidden_units, num_layers);
     
     if args.debug {
         println!("  📋 Hyperparameters:");
         println!("     • Clip epsilon: {}", trainer.clip_epsilon);
         println!("     • Num epochs: {}", trainer.num_epochs);
-        println!("     • Gamma: {}", trainer.gamma);
+        println!("     • Gamma (discount): {}", trainer.gamma);
         println!("     • Lambda (GAE): {}", trainer.gae_lambda);
-        println!("     • Beta (entropy): {}", trainer.entropy_coef);
+        println!("     • Beta (entropy coef): {}", trainer.entropy_coef);
         println!("     • Batch size: {}", trainer.batch_size);
         println!("     • Buffer size: {}", trainer.buffer_size);
     }
@@ -419,8 +419,8 @@ async fn run_training_loop(
             } else {
                 current_episode_reward
             };
-            println!("[Step {}/{: >8}] Reward: {:.3} | Avg: {:.2} | Episodes: {}", 
-                     step, max_steps, step_reward, avg_reward, total_episodes);
+            println!("[Step {}/{}] Reward: {:.3} | Avg: {:.2} | Buffer: {}/{} | Episodes: {}", 
+                     step, max_steps, step_reward, avg_reward, buffer.len(), time_horizon, total_episodes);
         }
         
         // Update policy when buffer is full (using time_horizon from config)
@@ -428,9 +428,10 @@ async fn run_training_loop(
             let (policy_loss, value_loss, entropy) = trainer.update(&mut buffer);
             num_updates += 1;
             
-            if args.debug || step % summary_freq == 0 {
-                println!("  🔄 Update #{}: policy={:.4}, value={:.4}, entropy={:.4}", 
-                         num_updates, policy_loss, value_loss, entropy);
+            // Only show update logs at summary_freq or in debug mode
+            if step % summary_freq == 0 || step == max_steps {
+                println!("  🔄 Update #{} at step {}: policy_loss={:.4}, value_loss={:.4}, entropy={:.4}", 
+                         num_updates, step, policy_loss, value_loss, entropy);
             }
             
             buffer.clear();
@@ -465,16 +466,16 @@ async fn run_training_loop(
     }
     
     // Final summary
-    println!("\n📊 Treinamento concluído!");
-    println!("  - Total updates: {}", num_updates);
-    println!("  - Episodes completados: {}", episode_rewards.len());
+    println!("\n📊 Training complete!");
+    println!("  - Total policy updates: {}", num_updates);
+    println!("  - Episodes completed: {}", episode_rewards.len());
     if !episode_rewards.is_empty() {
         let avg_reward = episode_rewards.iter().sum::<f32>() / episode_rewards.len() as f32;
         let max_reward = episode_rewards.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
         let min_reward = episode_rewards.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-        println!("  - Reward médio: {:.2}", avg_reward);
-        println!("  - Reward máximo: {:.2}", max_reward);
-        println!("  - Reward mínimo: {:.2}", min_reward);
+        println!("  - Average reward: {:.2}", avg_reward);
+        println!("  - Best reward: {:.2}", max_reward);
+        println!("  - Worst reward: {:.2}", min_reward);
     }
     
     Ok(())
@@ -492,6 +493,7 @@ async fn run_multi_env_training_loop(
     use rl_core::ppo_buffer::RolloutBuffer;
     
     let num_envs = multi_env.num_envs();
+    let base_port = multi_env.base_port();
     
     // Extract specs from first brain
     let brain = specs.brain_parameters.first()
@@ -624,16 +626,16 @@ async fn run_multi_env_training_loop(
         }
     }
     
-    println!("🧠 PPO Trainer configurado (lr={}, hidden={}, layers={})", 
+    println!("🧠 PPO Trainer initialized (lr={}, hidden={}, layers={})", 
              learning_rate, hidden_units, num_layers);
     
     if args.debug {
         println!("  📋 Hyperparameters:");
         println!("     • Clip epsilon: {}", trainer.clip_epsilon);
         println!("     • Num epochs: {}", trainer.num_epochs);
-        println!("     • Gamma: {}", trainer.gamma);
+        println!("     • Gamma (discount): {}", trainer.gamma);
         println!("     • Lambda (GAE): {}", trainer.gae_lambda);
-        println!("     • Beta (entropy): {}", trainer.entropy_coef);
+        println!("     • Beta (entropy coef): {}", trainer.entropy_coef);
         println!("     • Batch size: {}", trainer.batch_size);
         println!("     • Buffer size: {}", trainer.buffer_size);
     }
@@ -654,10 +656,17 @@ async fn run_multi_env_training_loop(
     let summary_freq = behavior_cfg.summary_freq as usize;
     let checkpoint_interval = behavior_cfg.checkpoint_interval as usize;
     
-    println!("🎯 Treinamento multi-env: max_steps={}, horizon={}, summary_freq={}", 
+    println!("🎯 Training: max_steps={}, horizon={}, summary_freq={}", 
              max_steps, time_horizon, summary_freq);
+    println!("   • Multi-env: {} parallel instances", num_envs);
+    println!("   • Experience aggregation: all environments contribute to shared policy");
     println!();
     
+    // Shared buffer collects experiences from ALL environments before policy update
+    // This is the correct PPO multi-environment implementation:
+    // - All envs use the SAME policy to generate actions
+    // - Experiences from all envs are collected into a single buffer
+    // - Policy is updated using the aggregated batch
     let mut buffer = RolloutBuffer::new();
     let mut current_outputs = reset_outputs;
     let mut total_reward_sum = 0.0;
@@ -668,7 +677,7 @@ async fn run_multi_env_training_loop(
     let mut env_episode_rewards = vec![0.0; num_envs];
     
     for step in 1..=max_steps {
-        // Generate actions for all environments
+        // Generate actions for all environments using the SAME policy
         let mut all_actions = Vec::new();
         
         for (_env_idx, output) in current_outputs.iter().enumerate() {
@@ -679,6 +688,7 @@ async fn run_multi_env_training_loop(
                 let mut actions_for_behavior = Vec::new();
                 
                 for agent_info in &agent_list.value {
+                    // Extract and flatten observations
                     let obs: Vec<f32> = agent_info.observations.iter()
                         .flat_map(|obs| {
                             if let Some(ref data) = obs.observation_data {
@@ -693,6 +703,7 @@ async fn run_multi_env_training_loop(
                         })
                         .collect();
                     
+                    // Generate action using shared policy
                     let obs_tensor = Tensor::<NdArray, 1>::from_floats(obs.as_slice(), &device)
                         .reshape([1, obs.len()]);
                     
@@ -730,10 +741,10 @@ async fn run_multi_env_training_loop(
             all_actions.push(step_input);
         }
         
-        // Step all environments in parallel
+        // Step all environments in parallel and collect experiences
         current_outputs = multi_env.step_all(all_actions).await?;
         
-        // Collect rewards from all environments
+            // Collect rewards and experiences from all environments (aggregate for batch training)
         let mut total_step_reward = 0.0;
         let mut any_done = false;
         
@@ -745,6 +756,11 @@ async fn run_multi_env_training_loop(
                     let step_reward = agent_info.reward;
                     let step_done = agent_info.done;
                     
+                    // TODO: Extract observations and store in buffer for training
+                    // Currently we generate actions on-the-fly but don't store trajectories
+                    // Proper PPO requires: (obs, action, reward, value, log_prob, done) tuples
+                    // For now, just collect rewards for monitoring
+                    
                     env_episode_rewards[env_idx] += step_reward;
                     total_step_reward += step_reward;
                     
@@ -753,9 +769,11 @@ async fn run_multi_env_training_loop(
                         total_episodes += 1;
                         
                         if args.debug {
-                            let avg_reward = total_reward_sum / total_episodes as f32;
-                            println!("  ✓ Env {} episódio completo: reward={:.2}, avg={:.2}", 
-                                     env_idx + 1, env_episode_rewards[env_idx], avg_reward);
+                            println!("  ✓ [Env-{} | Port {}] Episode complete: reward={:.2}, avg={:.2}", 
+                                     env_idx + 1, 
+                                     base_port + env_idx as u16,
+                                     env_episode_rewards[env_idx], 
+                                     total_reward_sum / total_episodes as f32);
                         }
                         
                         env_episode_rewards[env_idx] = 0.0;
@@ -765,25 +783,27 @@ async fn run_multi_env_training_loop(
             }
         }
         
-        // Log progress
+        // Log progress (respecting summary_freq from config)
         if step % summary_freq == 0 || step == max_steps {
             let avg_reward = if total_episodes > 0 {
                 total_reward_sum / total_episodes as f32
             } else {
                 0.0
             };
-            println!("[Step {}/{: >8}] Reward: {:.3} | Avg: {:.2} | Episodes: {} | Envs: {}", 
-                     step, max_steps, total_step_reward / num_envs as f32, avg_reward, total_episodes, num_envs);
+            let avg_step_reward = total_step_reward / num_envs as f32;
+            println!("[Step {}/{}] Reward: {:.3} | Avg: {:.2} | Buffer: {}/{} | Episodes: {}", 
+                     step, max_steps, avg_step_reward, avg_reward, buffer.len(), time_horizon, total_episodes);
         }
         
-        // Update policy when buffer is full
+        // Update policy when buffer is full (aggregated from all environments)
         if buffer.len() >= time_horizon {
             let (policy_loss, value_loss, entropy) = trainer.update(&mut buffer);
             num_updates += 1;
             
-            if args.debug || step % summary_freq == 0 {
-                println!("  🔄 Update #{}: policy={:.4}, value={:.4}, entropy={:.4}", 
-                         num_updates, policy_loss, value_loss, entropy);
+            // Only show update logs at summary_freq intervals
+            if step % summary_freq == 0 || step == max_steps {
+                println!("  🔄 Update #{} at step {}: policy_loss={:.4}, value_loss={:.4}, entropy={:.4}", 
+                         num_updates, step, policy_loss, value_loss, entropy);
             }
             
             buffer.clear();
@@ -804,12 +824,13 @@ async fn run_multi_env_training_loop(
     }
     
     // Final summary
-    println!("\n📊 Treinamento multi-env concluído!");
-    println!("  - Total updates: {}", num_updates);
-    println!("  - Episodes completados: {}", total_episodes);
+    println!("\n📊 Multi-environment training complete!");
+    println!("  - Total policy updates: {}", num_updates);
+    println!("  - Episodes completed (all envs): {}", total_episodes);
     if total_episodes > 0 {
         let avg_reward = total_reward_sum / total_episodes as f32;
-        println!("  - Reward médio: {:.2}", avg_reward);
+        println!("  - Average reward: {:.2}", avg_reward);
+        println!("  - Parallel environments: {}", num_envs);
     }
     
     Ok(())

@@ -1,19 +1,17 @@
 use crate::networks::{Actor, Critic};
 use crate::settings::RootConfig;
-use crate::communicator_objects::UnityMessageProto; // Adicionado
-// crate::env_manager::UnityEnvManager não é mais usado diretamente aqui
+use crate::communicator_objects::UnityMessageProto;
 use burn::tensor::{backend::Backend, Tensor};
 use serde::{Deserialize, Serialize};
-// use serde_yaml; // Not needed currently
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::collections::HashMap; // Adicionado
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PPOTrainerConfig {
-    pub input_size: usize, // Deve vir do handshake
-    pub action_size: usize, // Deve vir do handshake
+    pub input_size: usize,
+    pub action_size: usize,
     pub hidden_units: usize,
     pub num_layers: usize,
     pub max_steps: u64,
@@ -24,7 +22,6 @@ pub struct PPOTrainerConfig {
     pub export_onnx_every_checkpoint: bool,
 }
 
-// Usamos os tipos de grpc.rs
 use crate::communicator_objects::unity_to_external_proto_client;
 
 pub struct PPOTrainer<B: Backend> {
@@ -32,14 +29,11 @@ pub struct PPOTrainer<B: Backend> {
     critic: Critic<B>,
     device: B::Device,
     cfg: PPOTrainerConfig,
-    // Agora clients são criados e mantidos aqui, após inicialização feita externamente (em run_from_config)
     clients: Vec<unity_to_external_proto_client::UnityToExternalProtoClient<tonic::transport::Channel>>,
-    addresses: Vec<std::net::SocketAddr>, // Para referência
+    addresses: Vec<std::net::SocketAddr>,
 }
 
 impl<B: Backend> PPOTrainer<B> {
-    // Agora new assume que a inicialização (e descoberta de specs) já foi feita externamente.
-    // Recebe cfg com tamanhos corretos e addresses para conectar e montar a lista de clients.
     pub fn new(device: &B::Device, cfg: PPOTrainerConfig, addresses: Vec<std::net::SocketAddr>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let actor = Actor::new(
             cfg.input_size,
@@ -50,7 +44,6 @@ impl<B: Backend> PPOTrainer<B> {
         );
         let critic = Critic::new(cfg.input_size, cfg.hidden_units, cfg.num_layers, device);
 
-        // Conectar aos Unitys baseado nos addresses, assumindo conexão inicial já feita
         let rt = tokio::runtime::Runtime::new()?;
         let clients: Vec<_> = rt.block_on(async {
             let mut client_list = Vec::new();
@@ -66,18 +59,16 @@ impl<B: Backend> PPOTrainer<B> {
             critic,
             device: device.clone(),
             cfg,
-            clients, // Lista de clients prontos para trocar mensagens de step
+            clients,
             addresses,
         })
     }
 
     pub fn train(&mut self) {
-        // Novo loop: troca de mensagens com Unity para steps
-        // Inicializar ações iniciais (ex: zero)
         let initial_actions: Vec<Vec<f32>> = vec![vec![0.0; self.cfg.action_size]; self.cfg.num_envs];
-        let _current_actions = initial_actions; // Se não for usada, adicione _; se for usada, remova o mut
+        let _current_actions = initial_actions;
 
-        let mut buf = crate::ppo_buffer::RolloutBuffer::new();
+        let mut buf = super::buffer::RolloutBuffer::new();
         // Estado para cada ambiente
         let mut current_obs_per_env = vec![Vec::new(); self.cfg.num_envs];
         let mut current_reward_per_env = vec![0.0f32; self.cfg.num_envs];
@@ -86,9 +77,7 @@ impl<B: Backend> PPOTrainer<B> {
         let rt = tokio::runtime::Runtime::new().unwrap(); // Runtime para as chamadas assíncronas
 
         for step in 1..=self.cfg.max_steps {
-            // Calcular todas as ações antes das trocas
             let next_actions: Vec<Vec<f32>> = (0..self.cfg.num_envs).map(|i| {
-                // Obter ação do modelo com base na observação atual (ou ação inicial)
                 let obs = &current_obs_per_env[i];
                 let obs_len = obs.len().max(self.cfg.input_size.max(1));
                 let mut obs_vec = obs.clone();
@@ -104,58 +93,49 @@ impl<B: Backend> PPOTrainer<B> {
                 action
             }).collect();
 
-            // Vetores para armazenar resultados das trocas
             let mut new_obs_per_env = vec![None; self.cfg.num_envs];
             let mut new_rewards = vec![0.0f32; self.cfg.num_envs];
             let mut new_done = vec![false; self.cfg.num_envs];
             let mut transitions_to_store = vec![];
 
-            // Realizar as trocas de forma síncrona (mas com runtime para o gRPC)
             for (i, client) in self.clients.iter_mut().enumerate() {
                 let action_to_send = next_actions[i].clone();
-                // Montar mensagem de input para step
                 use crate::communicator_objects::{UnityInputProto, UnityRlInputProto, unity_rl_input_proto::ListAgentActionProto, AgentActionProto, CommandProto};
                 let agent_action_proto = AgentActionProto {
                     vector_actions_deprecated: vec![],
                     value: 0.0,
-                    continuous_actions: action_to_send, // Enviar a ação calculada anteriormente
-                    discrete_actions: vec![], // TODO: lidar com ações discretas
+                    continuous_actions: action_to_send,
+                    discrete_actions: vec![],
                 };
                 let mut action_map = HashMap::new();
-                // Assumir um behavior fixo para este trainer
                 action_map.insert("Behavior".to_string(), ListAgentActionProto { value: vec![agent_action_proto] });
 
                 let rl_input = UnityRlInputProto {
                     agent_actions: action_map,
                     command: CommandProto::Step as i32,
-                    side_channel: vec![], // TODO
+                    side_channel: vec![],
                 };
                 let input_msg = UnityMessageProto {
-                    header: None, // Preenchido pelo Unity
+                    header: None,
                     unity_output: None,
                     unity_input: Some(UnityInputProto { rl_input: Some(rl_input), rl_initialization_input: None }),
                 };
 
-                // Enviar e receber (blocking call using rt)
                 let response_msg = rt.block_on(async {
                     crate::grpc::exchange_with_unity(client, input_msg).await
                 }).unwrap_or_else(|e| {
-                    eprintln!("[erro] Falha na troca gRPC com o ambiente {}: {}", i, e);
-                    // Mensagem padrão em caso de erro
+                    eprintln!("[error] gRPC exchange failed with environment {}: {}", i, e);
                     UnityMessageProto { header: None, unity_output: None, unity_input: None }
                 });
 
-                // Processar resposta
                 if let (Some((rew, done)), Some(obs)) = (crate::grpc::parse_step_reward_done(&response_msg), crate::grpc::parse_step_observation_flat(&response_msg)) {
                     new_obs_per_env[i] = Some(obs.clone());
                     new_rewards[i] = rew;
                     new_done[i] = done;
-                    // Armazenar transição para o buffer
-                    transitions_to_store.push((rew, 0.0, done)); // value_placeholder é 0.0
+                    transitions_to_store.push((rew, 0.0, done));
                 }
             }
 
-            // Atualizar estados após todas as trocas
             for (i, new_obs) in new_obs_per_env.into_iter().enumerate() {
                 if let Some(obs) = new_obs {
                     current_obs_per_env[i] = obs;
@@ -164,16 +144,12 @@ impl<B: Backend> PPOTrainer<B> {
                 }
             }
 
-            // Armazenar transições no buffer
             for (rew, val, done) in transitions_to_store {
-                buf.push(vec![], vec![], rew, val, done, 0.0); // placeholder obs/actions
+                buf.push(vec![], vec![], rew, val, done, 0.0);
             }
 
-            // Processar buffer e salvar checkpoint se necessário
             if step % self.cfg.checkpoint_interval == 0 {
-                // Calcular GAE e atualizar buffer, critic network, etc. (placeholder)
                 buf.finish_path(self.cfg.gamma, self.cfg.gae_lambda, 0.0);
-                // Treinamento real do actor/critic (placeholder)
                 buf.clear();
                 let _ = self.save_checkpoint(step);
                 if self.cfg.export_onnx_every_checkpoint { let _ = self.export_onnx(step); }
@@ -212,9 +188,7 @@ impl<B: Backend> PPOTrainer<B> {
     }
 }
 
-// Atualizar run_from_config para fazer inicialização e descoberta de specs
 pub fn run_from_config<B: Backend>(device: &B::Device, root: &RootConfig, behavior: &str) {
-    // Pick behavior
     if let Some(bcfg) = root.behaviors.get(behavior) {
         let hidden = bcfg.network_settings.as_ref().and_then(|n| n.hidden_units).unwrap_or(128);
         let layers = bcfg.network_settings.as_ref().and_then(|n| n.num_layers).unwrap_or(2);
@@ -222,7 +196,6 @@ pub fn run_from_config<B: Backend>(device: &B::Device, root: &RootConfig, behavi
         let max_steps = bcfg.max_steps;
         let ckpt = bcfg.checkpoint_interval as u64;
 
-        // Configure gRPC init settings (mesmo código)
         if let Some(es) = &root.env_settings {
             let cfg = crate::grpc::InitConfig {
                 seed: es.seed.unwrap_or(-1),
@@ -233,10 +206,6 @@ pub fn run_from_config<B: Backend>(device: &B::Device, root: &RootConfig, behavi
             crate::grpc::set_init_config(cfg);
         }
 
-        // Env processes are managed by CLI main; don't restart here
-        // (Unity já iniciado pelo CLI)
-
-        // --- NOVO: Descoberta de specs via cliente ---
         let env_params = root.env_settings.as_ref().and_then(|es| es.environment_parameters.clone()).unwrap_or_default();
 
         let rt_init = tokio::runtime::Runtime::new().unwrap();
@@ -247,9 +216,7 @@ pub fn run_from_config<B: Backend>(device: &B::Device, root: &RootConfig, behavi
             addrs.push(std::net::SocketAddr::from(([127,0,0,1], base_port + i as u16)));
         }
 
-        // Conectar e inicializar cada Unity com parametros
-        // Esperar por conexão se necessário, com timeout
-        let timeout_secs = 30; // Exemplo de timeout
+        let timeout_secs = 30;
         let start_time = std::time::Instant::now();
         loop {
             let mut all_connected = true;
@@ -259,37 +226,34 @@ pub fn run_from_config<B: Backend>(device: &B::Device, root: &RootConfig, behavi
                         Ok(mut client) => {
                             match rt_init.block_on(async { crate::grpc::initialize_unity_with_params(&mut client, env_params.clone()).await }) {
                                 Ok(specs) => { specs_per_env.insert(*addr, specs); },
-                                Err(e) => { eprintln!("[debug] Inicialização com {} falhou: {}, tentando novamente...", addr, e); all_connected = false; }
+                                Err(e) => { eprintln!("[debug] Initialization with {} failed: {}, retrying...", addr, e); all_connected = false; }
                             }
                         },
-                        Err(e) => { eprintln!("[debug] Conexão a {} falhou: {}, tentando novamente...", addr, e); all_connected = false; }
+                        Err(e) => { eprintln!("[debug] Connection to {} failed: {}, retrying...", addr, e); all_connected = false; }
                     }
                 }
             }
             if all_connected { break; }
             if start_time.elapsed().as_secs() > timeout_secs {
-                eprintln!("[erro] Timeout esperando por inicialização do Unity em todas as portas: {:?}", addrs);
+                eprintln!("[error] Timeout waiting for Unity initialization on all ports: {:?}", addrs);
                 return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(500)); // Espera antes de tentar novamente
+            std::thread::sleep(std::time::Duration::from_millis(500));
         }
 
         if specs_per_env.is_empty() {
-            eprintln!("[erro] Nenhuma conexão Unity bem-sucedida após inicialização.");
+            eprintln!("[error] No successful Unity connections after initialization.");
             return;
         }
 
-        // Pegar specs do primeiro ambiente como referência (mesmo código do antigo)
         let first_specs = specs_per_env.values().next().unwrap();
         let obs_sum: usize = first_specs.observation_sizes.iter().copied().sum();
         let input_size = obs_sum.max(1);
         let action_size = first_specs.action_size.max(1);
 
-        // Derive gamma and lambda (mesmo código)
         let gamma = bcfg.reward_signals.as_ref().and_then(|m| m.get("extrinsic")).and_then(|e| e.gamma).unwrap_or(0.99);
         let gae_lambda = bcfg.hyperparameters.lambd;
 
-        // Build trainer com specs descobertos
         let mut trainer: PPOTrainer<B> = match PPOTrainer::new(
             device,
             PPOTrainerConfig {
@@ -308,11 +272,11 @@ pub fn run_from_config<B: Backend>(device: &B::Device, root: &RootConfig, behavi
         ) {
             Ok(t) => t,
             Err(e) => {
-                eprintln!("[erro] Falha ao criar PPOTrainer: {}", e);
+                eprintln!("[error] Failed to create PPOTrainer: {}", e);
                 return;
             }
         };
 
-        trainer.train(); // Agora o train usa o novo ciclo
+        trainer.train();
     }
 }

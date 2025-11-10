@@ -20,9 +20,9 @@ behaviors:
         gamma: 0.99
         strength: 1.0
     keep_checkpoints: 10
-    max_steps: 1000
+    max_steps: 5000
     time_horizon: 64
-    summary_freq: 100
+    summary_freq: 200
 env_settings:
   env_path: "/Users/victorbarbosa/git/UNITY Web/UnityMoonLander/Mac/App.app"
   base_port: 5005

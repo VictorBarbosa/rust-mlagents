@@ -79,16 +79,25 @@ impl MultiEnvManager {
             return Err(format!("Actions length ({}) != num_envs ({})", actions.len(), self.servers.len()));
         }
         
+        let verbose = self.servers.first().map(|s| s.verbose).unwrap_or(false);
+        let base_port = self.base_port;
         let mut handles = Vec::new();
         
-        for (server, action) in self.servers.iter_mut().zip(actions.into_iter()) {
+        for (i, (server, action)) in self.servers.iter_mut().zip(actions.into_iter()).enumerate() {
+            if verbose {
+                println!("[MultiEnvManager] Sending action to Env {} (port {})", i + 1, base_port + i as u16);
+            }
             let fut = server.step(action);
             handles.push(fut);
         }
         
         let mut outputs = Vec::new();
-        for fut in handles {
-            outputs.push(fut.await?);
+        for (i, fut) in handles.into_iter().enumerate() {
+            let output = fut.await?;
+            if verbose {
+                println!("[MultiEnvManager] Received response from Env {} (port {})", i + 1, base_port + i as u16);
+            }
+            outputs.push(output);
         }
         
         Ok(outputs)
