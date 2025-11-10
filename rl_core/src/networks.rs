@@ -1,10 +1,11 @@
 use burn::nn::{Linear, LinearConfig};
 use burn::tensor::activation::relu;
 use burn::tensor::{backend::Backend, Tensor};
+use burn::module::Module;
 
 // Based on `SimpleActor` and `ValueNetwork` from the Python code.
 
-#[derive(Debug)]
+#[derive(Module, Debug)]
 pub struct Actor<B: Backend> {
     layers: Vec<Linear<B>>,
     action_head: Linear<B>,
@@ -38,7 +39,7 @@ impl<B: Backend> Actor<B> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Module, Debug)]
 pub struct Critic<B: Backend> {
     layers: Vec<Linear<B>>,
     value_head: Linear<B>,

@@ -1,5 +1,5 @@
 behaviors:
-  MoonlanderAgent:
+  SimpleAgent:
     trainer_type: ppo
     hyperparameters:
       batch_size: 64
@@ -24,7 +24,7 @@ behaviors:
     time_horizon: 64
     summary_freq: 200
 env_settings:
-  env_path: "/Users/victorbarbosa/git/UNITY Web/UnityMoonLander/Mac/App.app"
+  env_path: "/Users/victorbarbosa/git/UNITY Web/SimpleTrain/Mac/App.app"
   base_port: 5005
   num_envs: 2
   num_areas: 1

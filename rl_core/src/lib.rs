@@ -6,6 +6,7 @@ pub mod grpc;
 pub mod grpc_server;
 pub mod multi_env_manager;
 pub mod side_channel;
+pub mod logging;
 
 // Legacy module exports for backward compatibility
 pub mod ppo {

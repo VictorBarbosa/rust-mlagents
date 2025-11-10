@@ -1,7 +1,7 @@
 # Complete training configuration for rust-mlagents
 # Full parameter compatibility with mlagents-learn original
 behaviors:
-  MoonlanderAgent:
+  SimpleAgent:
     trainer_type: ppo
     hyperparameters:
       batch_size: 256
@@ -26,7 +26,7 @@ behaviors:
     time_horizon: 64         # Buffer fills after this many steps
     summary_freq: 100        # Log stats every N steps
 env_settings:
-  env_path: "/Users/victorbarbosa/git/UNITY Web/UnityMoonLander/Mac/App.app"
+  env_path: "/Users/victorbarbosa/git/UNITY Web/SimpleTrain/Mac/App.app"
   base_port: 5004
   num_envs: 2
   num_areas: 1

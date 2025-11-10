@@ -1,5 +1,6 @@
 use clap::Parser;
 use rl_core::communicator_objects::{UnityRlInitializationOutputProto, UnityInputProto, UnityRlInputProto, CommandProto};
+use rl_core::logging::MetricsLogger;
 use std::collections::HashMap;
 
 // Single-level CLI matching original mlagents-learn style
@@ -435,7 +436,7 @@ async fn run_training_loop(
         
         // Update policy when buffer is full (using time_horizon from config)
         if buffer.len() >= time_horizon {
-            let (policy_loss, value_loss, entropy) = trainer.update(&mut buffer);
+            let (policy_loss, value_loss, entropy) = trainer.update_with_logging(&mut buffer, step as u64);
             num_updates += 1;
             
             // Only show update logs at summary_freq or in debug mode
@@ -450,9 +451,18 @@ async fn run_training_loop(
         // Save checkpoint (using checkpoint_interval from config)
         if step % checkpoint_interval == 0 && step > 0 {
             if args.debug {
-                println!("  💾 Checkpoint at step {} (saving disabled for now)", step);
+                println!("  💾 Saving model checkpoint at step {}", step);
             }
-            // TODO: Save model checkpoint
+            
+            // Create checkpoint directory
+            let checkpoint_dir = format!("checkpoints/{}/step_{}", behavior_name, step);
+            
+            // Try to save model checkpoint using the trainer's save_checkpoint method
+            if let Err(e) = trainer.save_checkpoint(&checkpoint_dir) {
+                eprintln!("⚠️  Failed to save checkpoint at step {}: {}", step, e);
+            } else {
+                println!("  ✓ Model checkpoint saved to: {}", checkpoint_dir);
+            }
         }
         
         // Check if episode ended
@@ -847,6 +857,12 @@ async fn run_multi_env_training_loop(
             }
         }
         
+        // Log metrics for TensorBoard-like visualization
+        use rl_core::logging::MetricsLogger;
+        let mut logger = MetricsLogger::new("logs");
+        let avg_step_reward = total_step_reward / num_envs as f32;
+        logger.log_scalar("step/reward", avg_step_reward as f64, step as u64);
+        
         // Log progress (respecting summary_freq from config)
         if step % summary_freq == 0 || step == max_steps {
             let avg_reward = if total_episodes > 0 {
@@ -854,14 +870,13 @@ async fn run_multi_env_training_loop(
             } else {
                 0.0
             };
-            let avg_step_reward = total_step_reward / num_envs as f32;
             println!("[Step {}/{}] Reward: {:.3} | Avg: {:.2} | Buffer: {}/{} | Episodes: {}", 
                      step, max_steps, avg_step_reward, avg_reward, buffer.len(), time_horizon, total_episodes);
         }
         
         // Update policy when buffer is full (aggregated from all environments)
         if buffer.len() >= time_horizon {
-            let (policy_loss, value_loss, entropy) = trainer.update(&mut buffer);
+            let (policy_loss, value_loss, entropy) = trainer.update_with_logging(&mut buffer, step as u64);
             num_updates += 1;
             
             // Only show update logs at summary_freq intervals
@@ -876,7 +891,17 @@ async fn run_multi_env_training_loop(
         // Save checkpoint
         if step % checkpoint_interval == 0 && step > 0 {
             if args.debug {
-                println!("  💾 Checkpoint at step {} (saving disabled for now)", step);
+                println!("  💾 Saving model checkpoint at step {}", step);
+            }
+            
+            // Create checkpoint directory for multi-env training
+            let checkpoint_dir = format!("checkpoints/{}/step_{}", behavior_name, step);
+            
+            // Try to save model checkpoint using the trainer's save_checkpoint method
+            if let Err(e) = trainer.save_checkpoint(&checkpoint_dir) {
+                eprintln!("⚠️  Failed to save checkpoint at step {}: {}", step, e);
+            } else {
+                println!("  ✓ Model checkpoint saved to: {}", checkpoint_dir);
             }
         }
         
@@ -959,7 +984,7 @@ fn main() {
         if a.base_port != 5005 { es.base_port = Some(a.base_port); }
         if a.num_envs != 1 { es.num_envs = Some(a.num_envs); }
     }
-    let _behavior = pick_behavior(&root).expect("no behaviors");
+    let behavior = pick_behavior(&root).expect("no behaviors");
 
     // Launch Unity if executable provided, else wait for Editor play
     let env_mgr = rl_core::env_manager::UnityEnvManager::from_settings(&root.env_settings);
@@ -1045,6 +1070,7 @@ fn main() {
                     std::process::exit(1);
                 };
                 
+                
                 // Start training loop
                 rt.block_on(async {
                     match run_training_loop(server, specs, &root, &a).await {
@@ -1098,6 +1124,7 @@ fn main() {
                 
                 let specs = all_specs[0].clone();
                 
+                
                 // Start multi-environment training loop
                 rt.block_on(async {
                     match run_multi_env_training_loop(multi_env, specs, &root, &a).await {
@@ -1113,9 +1140,12 @@ fn main() {
         }
     }
     
-    // Old code commented for now - will be replaced with server-based training
-    // type B = burn_ndarray::NdArray;
-    // let device = Default::default();
-    // rl_core::ppo::run_from_config::<B>(&device, &root, &behavior);
+    // Use the newer training system with checkpoint functionality if resume is requested
+    if a.resume {
+        println!("🔄 Resuming training from last checkpoint...");
+        type B = burn_ndarray::NdArray;
+        let device = Default::default();
+        rl_core::ppo::run_from_config::<B>(&device, &root, &behavior);
+    }
 }
 

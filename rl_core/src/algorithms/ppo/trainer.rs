@@ -1,6 +1,7 @@
 use crate::networks::{Actor, Critic};
 use crate::settings::RootConfig;
 use crate::communicator_objects::UnityMessageProto;
+use crate::logging::MetricsLogger;
 use burn::tensor::{backend::Backend, Tensor};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -22,6 +23,7 @@ pub struct PPOTrainerConfig {
     pub export_onnx_every_checkpoint: bool,
 }
 
+use burn::record::Recorder;
 use crate::communicator_objects::unity_to_external_proto_client;
 
 pub struct PPOTrainer<B: Backend> {
@@ -31,6 +33,7 @@ pub struct PPOTrainer<B: Backend> {
     cfg: PPOTrainerConfig,
     clients: Vec<unity_to_external_proto_client::UnityToExternalProtoClient<tonic::transport::Channel>>,
     addresses: Vec<std::net::SocketAddr>,
+    logger: MetricsLogger,
 }
 
 impl<B: Backend> PPOTrainer<B> {
@@ -54,6 +57,9 @@ impl<B: Backend> PPOTrainer<B> {
             Ok::<Vec<_>, Box<dyn std::error::Error + Send + Sync>>(client_list)
         })?;
 
+        // Create metrics logger
+        let logger = MetricsLogger::new("logs");
+
         Ok(Self {
             actor,
             critic,
@@ -61,6 +67,7 @@ impl<B: Backend> PPOTrainer<B> {
             cfg,
             clients,
             addresses,
+            logger,
         })
     }
 
@@ -151,7 +158,12 @@ impl<B: Backend> PPOTrainer<B> {
             if step % self.cfg.checkpoint_interval == 0 {
                 buf.finish_path(self.cfg.gamma, self.cfg.gae_lambda, 0.0);
                 buf.clear();
-                let _ = self.save_checkpoint(step);
+                
+                // Save the full model checkpoint with weights
+                if let Err(e) = self.save_model_checkpoint(step) {
+                    eprintln!("[warn] Failed to save model checkpoint at step {}: {}", step, e);
+                }
+                
                 if self.cfg.export_onnx_every_checkpoint { let _ = self.export_onnx(step); }
             }
         }
@@ -160,20 +172,138 @@ impl<B: Backend> PPOTrainer<B> {
     fn checkpoints_dir() -> PathBuf { PathBuf::from("checkpoints") }
 
     fn save_checkpoint(&self, step: u64) -> std::io::Result<PathBuf> {
+        // This is a legacy function, using the new model checkpoint function instead
+        // The full model checkpoint is now handled separately in save_model_checkpoint
         let dir = Self::checkpoints_dir();
         fs::create_dir_all(&dir)?;
-        let path = dir.join(format!("step_{step}.json"));
+        let path = dir.join(format!("metadata_step_{step}.json"));
         let meta = serde_json::json!({
             "step": step,
             "input_size": self.cfg.input_size,
             "hidden_units": self.cfg.hidden_units,
             "num_layers": self.cfg.num_layers,
             "action_size": self.cfg.action_size,
+            "max_steps": self.cfg.max_steps,
+            "checkpoint_interval": self.cfg.checkpoint_interval,
+            "num_envs": self.cfg.num_envs,
+            "gamma": self.cfg.gamma,
+            "gae_lambda": self.cfg.gae_lambda,
         });
-        fs::write(&path, serde_json::to_vec_pretty(&meta).unwrap())?;
+        fs::write(&path, serde_json::to_string_pretty(&meta).unwrap())?;
         Ok(path)
     }
-
+    
+    /// Save complete model checkpoint with network weights
+    pub fn save_model_checkpoint(&self, step: u64) -> Result<(), Box<dyn std::error::Error>> {
+        let checkpoint_dir = format!("checkpoints/model_step_{}", step);
+        std::fs::create_dir_all(&checkpoint_dir)?;
+        
+        // Save actor model
+        use burn::module::Module;
+        use burn::record::{FullPrecisionSettings, PrettyJsonFileRecorder, Recorder};
+        
+        let actor_path = std::path::Path::new(&checkpoint_dir).join("actor");
+        let actor_record = self.actor.clone().into_record();
+        PrettyJsonFileRecorder::<FullPrecisionSettings>::new()
+            .record(actor_record, actor_path)?;
+        
+        // Save critic model  
+        let critic_path = std::path::Path::new(&checkpoint_dir).join("critic");
+        let critic_record = self.critic.clone().into_record();
+        PrettyJsonFileRecorder::<FullPrecisionSettings>::new()
+            .record(critic_record, critic_path)?;
+        
+        // Save trainer configuration
+        let config_path = std::path::Path::new(&checkpoint_dir).join("config.json");
+        let config = serde_json::json!({
+            "cfg": self.cfg,
+            "step": step,
+        });
+        
+        std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+        
+        Ok(())
+    }
+    
+    /// Load the latest checkpoint
+    pub fn load_latest_checkpoint(&mut self) -> Result<u64, Box<dyn std::error::Error>> {
+        // Look for the latest checkpoint directory
+        let checkpoints_dir = std::path::Path::new("checkpoints");
+        if !checkpoints_dir.exists() {
+            return Err("No checkpoints directory found".into());
+        }
+        
+        let mut checkpoints = Vec::new();
+        for entry in std::fs::read_dir(checkpoints_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                if name.starts_with("model_step_") {
+                    let step_str = name.trim_start_matches("model_step_");
+                    if let Ok(step) = step_str.parse::<u64>() {
+                        checkpoints.push((step, path));
+                    }
+                }
+            }
+        }
+        
+        if checkpoints.is_empty() {
+            return Err("No checkpoint directories found".into());
+        }
+        
+        // Get the checkpoint with the highest step number
+        checkpoints.sort_by_key(|(step, _)| *step);
+        let (_, latest_path) = checkpoints.last().unwrap();
+        
+        // Load actor model
+        use burn::module::Module;
+        use burn::record::{FullPrecisionSettings, PrettyJsonFileRecorder, Recorder};
+        
+        let actor_path = latest_path.join("actor");
+        if actor_path.exists() {
+            let record = PrettyJsonFileRecorder::<FullPrecisionSettings>::new()
+                .load(actor_path, &self.device)?;
+            // Create a fresh actor and load the record into it
+            let fresh_actor = Actor::new(
+                self.cfg.input_size,
+                self.cfg.hidden_units,
+                self.cfg.num_layers,
+                self.cfg.action_size,
+                &self.device
+            );
+            self.actor = fresh_actor.load_record(record);
+        }
+        
+        // Load critic model
+        let critic_path = latest_path.join("critic");
+        if critic_path.exists() {
+            let record = PrettyJsonFileRecorder::<FullPrecisionSettings>::new()
+                .load(critic_path, &self.device)?;
+            // Create a fresh critic and load the record into it
+            let fresh_critic = Critic::new(
+                self.cfg.input_size,
+                self.cfg.hidden_units,
+                self.cfg.num_layers,
+                &self.device
+            );
+            self.critic = fresh_critic.load_record(record);
+        }
+        
+        // Load configuration and extract step
+        let config_path = latest_path.join("config.json");
+        let mut step = 0u64;
+        if config_path.exists() {
+            let content = std::fs::read_to_string(&config_path)?;
+            let config: serde_json::Value = serde_json::from_str(&content)?;
+            if let Some(s) = config["step"].as_u64() {
+                step = s;
+            }
+        }
+        
+        Ok(step)
+    }
+    
     fn export_onnx(&self, step: u64) -> std::io::Result<()> {
         let script_path = PathBuf::from("rl_core").join("export_onnx.py");
         if !script_path.exists() { return Ok(()); }
@@ -277,6 +407,21 @@ pub fn run_from_config<B: Backend>(device: &B::Device, root: &RootConfig, behavi
             }
         };
 
+
+        // Try to resume from latest checkpoint if resume flag was specified globally
+        // Note: We'd need access to global args to check if resume is enabled
+        // For now, we'll add a basic checkpoint loading before training
+        match trainer.load_latest_checkpoint() {
+            Ok(step) => {
+                println!("🔄 Successfully resumed from checkpoint at step {}", step);
+                // TODO: In a complete implementation, we would adjust training steps to continue from where we left off
+            },
+            Err(e) => {
+                println!("⚠️  Failed to load checkpoint (starting fresh): {}", e);
+            }
+        }
+
         trainer.train();
     }
+    
 }
