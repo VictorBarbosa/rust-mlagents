@@ -68,23 +68,23 @@ struct Args {
     #[arg(long = "timeout-wait", default_value_t = 60, help = "Timeout (s) waiting Unity to start (default matches original 60s)")]
     timeout_wait: u64,
     /// Largura da janela do executável (px)
-    #[arg(long, default_value_t = 84, help = "Window width in pixels")]
-    width: u32,
+    #[arg(long, help = "Window width in pixels")]
+    width: Option<u32>,
     /// Altura da janela do executável (px)
-    #[arg(long, default_value_t = 84, help = "Window height in pixels")]
-    height: u32,
+    #[arg(long, help = "Window height in pixels")]
+    height: Option<u32>,
     /// Nível de qualidade gráfico Unity
-    #[arg(long = "quality-level", default_value_t = 5, help = "Unity QualitySettings level")]
-    quality_level: i32,
+    #[arg(long = "quality-level", help = "Unity QualitySettings level")]
+    quality_level: Option<i32>,
     /// Time scale do motor Unity
-    #[arg(long = "time-scale", default_value_t = 20.0, help = "Unity Time.timeScale value")]
-    time_scale: f32,
+    #[arg(long = "time-scale", help = "Unity Time.timeScale value")]
+    time_scale: Option<f32>,
     /// Frame rate alvo (-1 ilimitado)
-    #[arg(long = "target-frame-rate", default_value_t = -1, help = "Application.targetFrameRate (-1 unlimited)")]
-    target_frame_rate: i32,
+    #[arg(long = "target-frame-rate", help = "Application.targetFrameRate (-1 unlimited)")]
+    target_frame_rate: Option<i32>,
     /// Frame rate de captura (Time.captureFramerate)
-    #[arg(long = "capture-frame-rate", default_value_t = 60, help = "Time.captureFramerate value")]
-    capture_frame_rate: i32,
+    #[arg(long = "capture-frame-rate", help = "Time.captureFramerate value")]
+    capture_frame_rate: Option<i32>,
     /// Executa sem inicializar driver gráfico
     #[arg(long = "no-graphics", help = "Run Unity with graphics disabled")]
     no_graphics: bool,
@@ -152,12 +152,12 @@ async fn run_training_loop(
         .unwrap_or_default();
     
     let engine_config = rl_core::side_channel::EngineConfig {
-        width: config.engine_settings.as_ref().map(|e| e.width).unwrap_or(args.width),
-        height: config.engine_settings.as_ref().map(|e| e.height).unwrap_or(args.height),
-        quality_level: config.engine_settings.as_ref().map(|e| e.quality_level).unwrap_or(args.quality_level),
-        time_scale: config.engine_settings.as_ref().map(|e| e.time_scale).unwrap_or(args.time_scale),
-        target_frame_rate: config.engine_settings.as_ref().map(|e| e.target_frame_rate).unwrap_or(args.target_frame_rate),
-        capture_frame_rate: config.engine_settings.as_ref().map(|e| e.capture_frame_rate).unwrap_or(args.capture_frame_rate),
+        width: config.engine_settings.as_ref().map(|e| e.width).unwrap_or_else(|| args.width.unwrap_or(84)),
+        height: config.engine_settings.as_ref().map(|e| e.height).unwrap_or_else(|| args.height.unwrap_or(84)),
+        quality_level: config.engine_settings.as_ref().map(|e| e.quality_level).unwrap_or_else(|| args.quality_level.unwrap_or(5)),
+        time_scale: config.engine_settings.as_ref().map(|e| e.time_scale).unwrap_or_else(|| args.time_scale.unwrap_or(20.0)),
+        target_frame_rate: config.engine_settings.as_ref().map(|e| e.target_frame_rate).unwrap_or_else(|| args.target_frame_rate.unwrap_or(-1)),
+        capture_frame_rate: config.engine_settings.as_ref().map(|e| e.capture_frame_rate).unwrap_or_else(|| args.capture_frame_rate.unwrap_or(60)),
         no_graphics: config.engine_settings.as_ref().map(|e| e.no_graphics).unwrap_or(args.no_graphics),
     };
     
@@ -545,12 +545,12 @@ async fn run_multi_env_training_loop(
         .unwrap_or_default();
     
     let engine_config = rl_core::side_channel::EngineConfig {
-        width: config.engine_settings.as_ref().map(|e| e.width).unwrap_or(args.width),
-        height: config.engine_settings.as_ref().map(|e| e.height).unwrap_or(args.height),
-        quality_level: config.engine_settings.as_ref().map(|e| e.quality_level).unwrap_or(args.quality_level),
-        time_scale: config.engine_settings.as_ref().map(|e| e.time_scale).unwrap_or(args.time_scale),
-        target_frame_rate: config.engine_settings.as_ref().map(|e| e.target_frame_rate).unwrap_or(args.target_frame_rate),
-        capture_frame_rate: config.engine_settings.as_ref().map(|e| e.capture_frame_rate).unwrap_or(args.capture_frame_rate),
+        width: config.engine_settings.as_ref().map(|e| e.width).unwrap_or_else(|| args.width.unwrap_or(84)),
+        height: config.engine_settings.as_ref().map(|e| e.height).unwrap_or_else(|| args.height.unwrap_or(84)),
+        quality_level: config.engine_settings.as_ref().map(|e| e.quality_level).unwrap_or_else(|| args.quality_level.unwrap_or(5)),
+        time_scale: config.engine_settings.as_ref().map(|e| e.time_scale).unwrap_or_else(|| args.time_scale.unwrap_or(20.0)),
+        target_frame_rate: config.engine_settings.as_ref().map(|e| e.target_frame_rate).unwrap_or_else(|| args.target_frame_rate.unwrap_or(-1)),
+        capture_frame_rate: config.engine_settings.as_ref().map(|e| e.capture_frame_rate).unwrap_or_else(|| args.capture_frame_rate.unwrap_or(60)),
         no_graphics: config.engine_settings.as_ref().map(|e| e.no_graphics).unwrap_or(args.no_graphics),
     };
     

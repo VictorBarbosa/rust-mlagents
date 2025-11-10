@@ -1,0 +1,11 @@
+{
+  "batch_size": 64,
+  "buffer_size": 2048,
+  "clip_epsilon": 0.20000000298023224,
+  "entropy_coef": 0.009999999776482582,
+  "gae_lambda": 0.949999988079071,
+  "gamma": 0.9900000095367432,
+  "learning_rate": 0.0003000000142492354,
+  "num_epochs": 3,
+  "value_coef": 0.5
+}

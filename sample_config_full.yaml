@@ -22,7 +22,7 @@ behaviors:
         gamma: 0.99
         strength: 1.0
     keep_checkpoints: 5
-    max_steps: 5000          # Total training steps
+    max_steps: 500000000          # Total training steps
     time_horizon: 64         # Buffer fills after this many steps
     summary_freq: 100        # Log stats every N steps
 env_settings:
