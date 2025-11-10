@@ -165,35 +165,19 @@ impl<B: Backend> PPOTrainer<B> {
             return (0.0, 0.0, 0.0); // Invalid action size
         };
         
-        // Flatten only the valid number of observations and actions
-        let obs_needed = effective_len.min(buffer.observations.len());
-        let action_needed = effective_len.min(buffer.actions.len());
-        
-        let obs_flat: Vec<f32> = buffer.observations
-            .iter()
-            .take(obs_needed)
-            .take(effective_len)
-            .flatten()
-            .copied()
-            .collect();
-        
-        let actions_flat: Vec<f32> = buffer.actions
-            .iter()
-            .take(action_needed)
-            .take(effective_len)
-            .flatten()
-            .copied()
-            .collect();
-        
-        // Verify the flat arrays have the correct total size
-        if obs_flat.len() != effective_len * obs_size {
-            eprintln!("[debug] Mismatch in obs_flat size: got {}, expected {}", obs_flat.len(), effective_len * obs_size);
-            return (0.0, 0.0, 0.0);
+        // Create tensors ensuring consistent dimensions by padding or truncating if necessary
+        let mut obs_flat: Vec<f32> = Vec::with_capacity(effective_len * obs_size);
+        for obs in buffer.observations.iter().take(effective_len) {
+            let mut padded_obs = obs.clone();
+            padded_obs.resize(obs_size, 0.0); // Pad with zeros if too short, truncate if too long
+            obs_flat.extend_from_slice(&padded_obs);
         }
         
-        if actions_flat.len() != effective_len * action_size {
-            eprintln!("[debug] Mismatch in actions_flat size: got {}, expected {}", actions_flat.len(), effective_len * action_size);
-            return (0.0, 0.0, 0.0);
+        let mut actions_flat: Vec<f32> = Vec::with_capacity(effective_len * action_size);
+        for actions in buffer.actions.iter().take(effective_len) {
+            let mut padded_actions = actions.clone();
+            padded_actions.resize(action_size, 0.0); // Pad with zeros if too short, truncate if too long
+            actions_flat.extend_from_slice(&padded_actions);
         }
         
         let obs_tensor = Tensor::<B, 2>::from_floats(obs_flat.as_slice(), &self.device)
