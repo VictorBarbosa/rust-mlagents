@@ -1,0 +1,358 @@
+// Unity Environment Integration for SAC
+use super::{SACTrainer, Transition};
+use crate::old::grpc_server::GrpcServer;
+use tch::{Tensor, Device};
+
+// Temporary: Define stub types until proto files are properly generated
+pub struct UnityRlInputProto {
+    pub command: i32,
+    pub agent_actions: std::collections::HashMap<i32, AgentActionProto>,
+    pub side_channel: Vec<u8>,
+}
+
+pub struct UnityOutputProto {
+    pub rl_output: Option<RlOutputProto>,
+    pub rl_initialization_output: Option<RlInitializationOutputProto>,
+}
+
+pub struct RlOutputProto {
+    pub agent_infos: std::collections::HashMap<String, AgentInfoListProto>,
+}
+
+pub struct RlInitializationOutputProto {
+    pub brain_parameters: Vec<BrainParametersProto>,
+}
+
+pub struct BrainParametersProto {
+    pub brain_name: String,
+    pub action_spec: Option<ActionSpecProto>,
+}
+
+pub struct ActionSpecProto {
+    pub num_continuous_actions: i32,
+}
+
+pub struct AgentInfoListProto {
+    pub value: Vec<AgentInfoProto>,
+}
+
+pub struct AgentInfoProto {
+    pub observations: Vec<ObservationProto>,
+    pub reward: f32,
+    pub done: bool,
+}
+
+pub struct ObservationProto {
+    pub float_data: FloatDataProto,
+}
+
+pub struct FloatDataProto {
+    pub compressed_data: Vec<f32>,
+}
+
+#[derive(Clone)]
+pub struct AgentActionProto {
+    pub continuous_actions: Option<ContinuousActionsProto>,
+    pub discrete_actions: Option<DiscreteActionsProto>,
+}
+
+#[derive(Clone)]
+pub struct ContinuousActionsProto {
+    pub vector: Vec<f32>,
+}
+
+#[derive(Clone)]
+pub struct DiscreteActionsProto {
+    pub actions: Vec<i32>,
+}
+
+pub struct CommandProto;
+impl CommandProto {
+    pub const Reset: i32 = 0;
+    pub const Step: i32 = 1;
+}
+
+pub struct InitConfig {
+    pub seed: i32,
+    pub communication_version: String,
+    pub package_version: String,
+    pub num_areas: i32,
+}
+
+pub struct UnityEnvironment {
+    server: GrpcServer,
+    behavior_name: String,
+    obs_dim: usize,
+    action_dim: usize,
+    device: Device,
+}
+
+impl UnityEnvironment {
+    pub async fn new(port: u16, device: Device) -> Result<Self, String> {
+        let mut server = GrpcServer::new_with_verbosity(port, true);
+        
+        // Initialize connection with Unity
+        let init_config = InitConfig {
+            seed: 42,
+            communication_version: "1.5.0".to_string(),
+            package_version: "0.30.0".to_string(),
+            num_areas: 1,
+        };
+        
+        let init_output = server.initialize(init_config).await?;
+        
+        // Extract behavior specs from initialization
+        let (behavior_name, obs_dim, action_dim) = Self::extract_specs(&init_output)?;
+        
+        Ok(Self {
+            server,
+            behavior_name,
+            obs_dim,
+            action_dim,
+            device,
+        })
+    }
+    
+    fn extract_specs(output: &UnityRlOutputProto) -> Result<(String, usize, usize), String> {
+        if let Some(init) = &output.rl_initialization_output {
+            if let Some(brain_params) = init.brain_parameters.first() {
+                let behavior_name = brain_params.brain_name.clone();
+                
+                // Get action dimensions
+                let action_dim = if let Some(action_spec) = &brain_params.action_spec {
+                    action_spec.num_continuous_actions as usize
+                } else {
+                    return Err("No action spec found".to_string());
+                };
+                
+                // Get observation dimensions (will be determined from first step)
+                let obs_dim = 0; // Will be updated on first observation
+                
+                Ok((behavior_name, obs_dim, action_dim))
+            } else {
+                Err("No brain parameters found".to_string())
+            }
+        } else {
+            Err("No initialization output".to_string())
+        }
+    }
+    
+    pub async fn reset(&mut self) -> Result<Vec<f32>, String> {
+        // Send reset command to Unity
+        let reset_input = UnityRlInputProto {
+            command: CommandProto::Reset as i32,
+            agent_actions: std::collections::HashMap::new(),
+            side_channel: vec![],
+        };
+        
+        self.server.send_input(reset_input).await?;
+        
+        // Get first observation
+        let output = self.server.receive_output().await?;
+        self.extract_observation(&output)
+    }
+    
+    pub async fn step(&mut self, action: &Tensor) -> Result<(Vec<f32>, f32, bool), String> {
+        // Convert tensor action to vec
+        let action_vec = Vec::<f32>::try_from(action.shallow_clone())
+            .map_err(|e| format!("Failed to convert action: {:?}", e))?;
+        
+        // Prepare action for Unity
+        let agent_action = AgentActionProto {
+            continuous_actions: Some(ContinuousActionsProto {
+                vector: action_vec,
+            }),
+            discrete_actions: None,
+        };
+        
+        // Get agent IDs from last output
+        let agent_ids = self.get_agent_ids().await?;
+        
+        let mut agent_actions = std::collections::HashMap::new();
+        for agent_id in agent_ids {
+            agent_actions.insert(agent_id, agent_action.clone());
+        }
+        
+        // Send step command
+        let step_input = UnityRlInputProto {
+            command: CommandProto::Step as i32,
+            agent_actions,
+            side_channel: vec![],
+        };
+        
+        self.server.send_input(step_input).await?;
+        
+        // Get response
+        let output = self.server.receive_output().await?;
+        
+        let obs = self.extract_observation(&output)?;
+        let (reward, done) = self.extract_reward_done(&output)?;
+        
+        Ok((obs, reward, done))
+    }
+    
+    fn extract_observation(&self, output: &UnityOutputProto) -> Result<Vec<f32>, String> {
+        if let Some(rl_output) = &output.rl_output {
+            if let Some(agent_list) = rl_output.agent_infos.get(&self.behavior_name) {
+                if let Some(agent_info) = agent_list.value.first() {
+                    if let Some(obs) = agent_info.observations.first() {
+                        // Flatten observation
+                        let flat_obs: Vec<f32> = obs.float_data.compressed_data.clone();
+                        
+                        // Update obs_dim if needed
+                        if self.obs_dim == 0 {
+                            // This is hacky but necessary for first observation
+                            // In production, should be done differently
+                        }
+                        
+                        return Ok(flat_obs);
+                    }
+                }
+            }
+        }
+        Err("No observation found in output".to_string())
+    }
+    
+    fn extract_reward_done(&self, output: &UnityOutputProto) -> Result<(f32, bool), String> {
+        if let Some(rl_output) = &output.rl_output {
+            if let Some(agent_list) = rl_output.agent_infos.get(&self.behavior_name) {
+                if let Some(agent_info) = agent_list.value.first() {
+                    let reward = agent_info.reward;
+                    let done = agent_info.done;
+                    return Ok((reward, done));
+                }
+            }
+        }
+        Err("No reward/done found in output".to_string())
+    }
+    
+    async fn get_agent_ids(&self) -> Result<Vec<i32>, String> {
+        // This should get agent IDs from the last output
+        // For now, return a placeholder
+        Ok(vec![0])
+    }
+    
+    pub fn get_obs_dim(&self) -> usize {
+        self.obs_dim
+    }
+    
+    pub fn get_action_dim(&self) -> usize {
+        self.action_dim
+    }
+}
+
+// Training loop that integrates SAC with Unity
+pub struct UnityTrainer {
+    env: UnityEnvironment,
+    sac: SACTrainer,
+    max_steps: usize,
+    log_interval: usize,
+}
+
+impl UnityTrainer {
+    pub async fn new(
+        port: u16,
+        sac_trainer: SACTrainer,
+        max_steps: usize,
+    ) -> Result<Self, String> {
+        let device = Device::cuda_if_available();
+        let env = UnityEnvironment::new(port, device).await?;
+        
+        Ok(Self {
+            env,
+            sac: sac_trainer,
+            max_steps,
+            log_interval: 100,
+        })
+    }
+    
+    pub async fn train(&mut self) -> Result<(), String> {
+        println!("🚀 Starting SAC training with Unity environment");
+        println!("   Obs dim: {}, Action dim: {}", self.env.get_obs_dim(), self.env.get_action_dim());
+        
+        let mut episode = 0;
+        let mut step_count = 0;
+        
+        while step_count < self.max_steps {
+            // Reset environment
+            let obs = self.env.reset().await?;
+            let mut episode_reward = 0.0;
+            let mut episode_steps = 0;
+            
+            let mut current_obs = obs;
+            
+            loop {
+                // Get observation tensor
+                let obs_tensor = Tensor::from_slice(&current_obs)
+                    .to_device(self.sac.device)
+                    .unsqueeze(0); // Add batch dimension
+                
+                // Select action
+                let action = self.sac.select_action(&obs_tensor, false);
+                
+                // Step environment
+                let (next_obs, reward, done) = self.env.step(&action).await?;
+                
+                // Store transition
+                let transition = Transition {
+                    obs: current_obs.clone(),
+                    action: Vec::<f32>::try_from(action.squeeze_dim(0))
+                        .map_err(|e| format!("Action conversion failed: {:?}", e))?,
+                    reward,
+                    next_obs: next_obs.clone(),
+                    done,
+                };
+                self.sac.store_transition(transition);
+                
+                // Update SAC
+                if let Some(metrics) = self.sac.update() {
+                    if step_count % self.log_interval == 0 {
+                        println!(
+                            "Step {}: Actor Loss: {:.4}, Critic Loss: {:.4}, Alpha: {:.4}, Reward: {:.2}",
+                            step_count,
+                            metrics.actor_loss,
+                            metrics.critic_loss,
+                            metrics.alpha,
+                            episode_reward
+                        );
+                    }
+                }
+                
+                episode_reward += reward;
+                episode_steps += 1;
+                step_count += 1;
+                
+                if done || step_count >= self.max_steps {
+                    break;
+                }
+                
+                current_obs = next_obs;
+            }
+            
+            episode += 1;
+            println!(
+                "✓ Episode {} finished: {} steps, reward: {:.2}",
+                episode, episode_steps, episode_reward
+            );
+            
+            // Save checkpoint periodically
+            if episode % 10 == 0 {
+                let checkpoint_path = format!("checkpoints/sac_episode_{}", episode);
+                self.sac.save_checkpoint(&checkpoint_path)
+                    .map_err(|e| format!("Failed to save checkpoint: {}", e))?;
+            }
+        }
+        
+        println!("🎉 Training completed! Total steps: {}", step_count);
+        
+        // Save final model
+        self.sac.save_checkpoint("checkpoints/sac_final")
+            .map_err(|e| format!("Failed to save final checkpoint: {}", e))?;
+        
+        // Export ONNX
+        self.sac.export_onnx("models/sac_policy")
+            .map_err(|e| format!("Failed to export ONNX: {}", e))?;
+        
+        Ok(())
+    }
+}

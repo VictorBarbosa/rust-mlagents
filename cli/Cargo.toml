@@ -7,9 +7,8 @@ edition = "2021"
 clap = { version = "4.5", features = ["derive"] }
 serde_yaml = "0.9"
 rl_core = { path = "../rl_core" }
-burn = "0.18"
-burn-ndarray = "0.18"
 tokio = { version = "1", features = ["rt-multi-thread"] }
+# Note: Using tch-rs via rl_core, removed burn to avoid conflicts
 
 [dev-dependencies]
 assert_cmd = "2"
