@@ -12,7 +12,7 @@ behaviors:
       hidden_units: 256
       num_layers: 2
       normalize: false
-    max_steps: 5000000000
+    max_steps: 1600
     time_horizon: 64
     summary_freq: 5000
     checkpoint_interval: 1000

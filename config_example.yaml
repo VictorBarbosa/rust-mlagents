@@ -1,0 +1,53 @@
+# SAC Training Configuration Example
+# Este arquivo controla o treinamento e exportação de checkpoints/ONNX
+
+# Arquitetura da rede
+hidden_layers: [256, 256]  # Tamanhos das camadas ocultas
+
+# Hiperparâmetros de treinamento
+gamma: 0.99               # Fator de desconto
+tau: 0.005                # Coeficiente de soft update
+lr_actor: 0.0003          # Learning rate do actor
+lr_critic: 0.0003         # Learning rate do critic
+lr_alpha: 0.0003          # Learning rate do alpha
+
+# Replay buffer
+buffer_size: 1000000      # Tamanho do buffer de replay
+batch_size: 256           # Tamanho do batch
+warmup_steps: 1000        # Steps antes de começar a treinar
+
+# Entropia
+auto_alpha: true          # Ajustar alpha automaticamente
+init_alpha: 0.2           # Valor inicial de alpha
+target_entropy: null      # Entropia alvo (null = automático)
+
+# Treinamento
+gradient_steps: 1         # Gradient steps por env step
+target_update_interval: 1 # Frequência de update dos targets
+
+# 🔥 Checkpoints e ONNX Export
+checkpoint_interval: 10000  # Salvar checkpoint a cada X steps
+save_onnx: true            # Exportar ONNX automaticamente?
+
+# Quando checkpoint_interval = 10000:
+# - A cada 10.000 steps: salva checkpoint.pt + metadata.json
+# - Se save_onnx = true: também gera .onnx automaticamente
+# - No final do treino: salva checkpoint final + ONNX (se habilitado)
+
+# Exemplos de configuração:
+
+# Checkpoint frequente (desenvolvimento/debug):
+# checkpoint_interval: 1000
+# save_onnx: false  # Não exporta ONNX intermediário (mais rápido)
+
+# Checkpoint moderado (treinamento normal):
+# checkpoint_interval: 10000
+# save_onnx: true  # Exporta ONNX a cada checkpoint
+
+# Checkpoint esparso (treinamento longo):
+# checkpoint_interval: 50000
+# save_onnx: true
+
+# Desabilitar checkpoint intermediário:
+# checkpoint_interval: 0  # Só salva no final
+# save_onnx: true

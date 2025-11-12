@@ -335,11 +335,19 @@ impl UnityTrainer {
                 episode, episode_steps, episode_reward
             );
             
-            // Save checkpoint periodically
-            if episode % 10 == 0 {
-                let checkpoint_path = format!("checkpoints/sac_episode_{}", episode);
+            // Save checkpoint periodically based on config.checkpoint_interval
+            if self.sac.should_checkpoint() {
+                let checkpoint_path = format!("checkpoints/sac_step_{}", self.sac.step);
                 self.sac.save_checkpoint(&checkpoint_path)
                     .map_err(|e| format!("Failed to save checkpoint: {}", e))?;
+                println!("✓ Checkpoint saved at step {}", self.sac.step);
+                
+                // Export ONNX if enabled in config
+                if self.sac.config.save_onnx {
+                    self.sac.export_onnx(&checkpoint_path)
+                        .map_err(|e| format!("Failed to export ONNX: {}", e))?;
+                    println!("✓ ONNX exported at step {}", self.sac.step);
+                }
             }
         }
         
@@ -348,10 +356,14 @@ impl UnityTrainer {
         // Save final model
         self.sac.save_checkpoint("checkpoints/sac_final")
             .map_err(|e| format!("Failed to save final checkpoint: {}", e))?;
+        println!("✓ Final checkpoint saved: checkpoints/sac_final.pt");
         
-        // Export ONNX
-        self.sac.export_onnx("models/sac_policy")
-            .map_err(|e| format!("Failed to export ONNX: {}", e))?;
+        // Export ONNX if enabled in config
+        if self.sac.config.save_onnx {
+            self.sac.export_onnx("checkpoints/sac_final")
+                .map_err(|e| format!("Failed to export final ONNX: {}", e))?;
+            println!("✓ Final ONNX exported: checkpoints/sac_final.onnx");
+        }
         
         Ok(())
     }

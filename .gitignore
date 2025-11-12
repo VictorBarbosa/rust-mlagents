@@ -20,9 +20,12 @@ results/*/**/*.pt
 ./**/*.o
 ./**/*.dll
 ./**/*.gbc
+./**/*.meta
 ./SimpleTrain/Library/
 SimpleTrain/Library/Artifacts/
 SimpleTrain/Library/Bee/
 ./SimpleTrain/Library/Artifacts/
 ./SimpleTrain/Library/Bee/
 ./results/ 
+SimpleTrain/Library/
+SimpleTrain/Temp/
