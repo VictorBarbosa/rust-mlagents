@@ -224,6 +224,10 @@ impl SACTrainer {
             step: self.step,
         })
     }
+
+    pub fn should_checkpoint(&self) -> bool {
+        self.config.checkpoint_interval > 0 && self.step > 0 && self.step % self.config.checkpoint_interval as i64 == 0
+    }
     
     fn update_critics(&mut self, batch: &Batch) -> (f64, f64, f64) {
         let dtype = self.config.dtype;
@@ -348,19 +352,15 @@ impl SACTrainer {
         let parent = path_obj.parent().unwrap_or(std::path::Path::new("."));
         let stem = path_obj.file_stem().and_then(|s| s.to_str()).unwrap_or("checkpoint");
         
-        // Save individual components with prefixes
-        self.actor_vs.save(parent.join(format!("{}_actor.pt", stem)))?;
-        self.critic_vs.save(parent.join(format!("{}_critic.pt", stem)))?;
-        self.target_critic_vs.save(parent.join(format!("{}_target.pt", stem)))?;
+        // Only save the main checkpoint file (following original ML-Agents format)
         
         // Also save actor as the main checkpoint file (for ONNX export)
         self.actor_vs.save(path)?;
         
         // Save to checkpoint.pt as well (ML-Agents default)
         if let Some(dir) = std::path::Path::new(path).parent() {
-            self.actor_vs.save(dir.join("checkpoint.pt"))?;
-            self.critic_vs.save(dir.join("checkpoint_critic.pt"))?;
-            self.target_critic_vs.save(dir.join("checkpoint_target.pt"))?;
+            let checkpoint_pt_path = dir.join("checkpoint.pt");
+            self.actor_vs.save(&*checkpoint_pt_path.to_string_lossy())?;
         }
         
         // Save metadata
@@ -377,7 +377,7 @@ impl SACTrainer {
             )?;
         }
         
-        println!("✓ Checkpoint saved: {} (actor+critic+target)", path);
+        println!("✓ Checkpoint saved: {}", path);
         Ok(())
     }
     
@@ -387,10 +387,8 @@ impl SACTrainer {
         let parent = path_obj.parent().unwrap_or(std::path::Path::new("."));
         let stem = path_obj.file_stem().and_then(|s| s.to_str()).unwrap_or("checkpoint");
         
-        // Load individual components
-        self.actor_vs.load(parent.join(format!("{}_actor.pt", stem)))?;
-        self.critic_vs.load(parent.join(format!("{}_critic.pt", stem)))?;
-        self.target_critic_vs.load(parent.join(format!("{}_target.pt", stem)))?;
+        // Load from the single checkpoint file (following original ML-Agents format)
+        self.actor_vs.load(path)?;
         
         // Load metadata
         let metadata_path = if let Some(dir) = std::path::Path::new(path).parent() {
@@ -472,13 +470,29 @@ class ActorNetwork(nn.Module):
         self.fc1 = nn.Linear(obs_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.mean = nn.Linear(hidden_dim, action_dim)
-        self.log_std = nn.Linear(hidden_dim, action_dim)  # For SAC stochastic policy
+        self.log_std = nn.Linear(hidden_dim, action_dim)
         
     def forward(self, obs):
         x = torch.relu(self.fc1(obs))
         x = torch.relu(self.fc2(x))
-        action = torch.tanh(self.mean(x))  # Deterministic action for inference
-        return action
+        mean = self.mean(x)
+        
+        deterministic_continuous_actions = torch.tanh(mean)
+        continuous_actions = deterministic_continuous_actions
+
+        # Define constant tensors inside forward to make them part of the trace
+        action_dim = self.mean.out_features
+        version_number = torch.tensor([3], dtype=torch.int64, device=obs.device)
+        memory_size = torch.tensor([0], dtype=torch.int64, device=obs.device)
+        continuous_action_output_shape = torch.tensor([action_dim], dtype=torch.int64, device=obs.device)
+
+        return (
+            version_number,
+            memory_size,
+            continuous_actions,
+            continuous_action_output_shape,
+            deterministic_continuous_actions,
+        )
 
 def main():
     import os
@@ -566,11 +580,17 @@ def main():
             export_params=True,
             opset_version=11,
             do_constant_folding=True,
-            input_names=['observation'],
-            output_names=['action'],
+            input_names=['vector_observation'],
+            output_names=[
+                'version_number',
+                'memory_size',
+                'continuous_actions',
+                'continuous_action_output_shape',
+                'deterministic_continuous_actions'
+            ],
             dynamic_axes={{
-                'observation': {{0: 'batch_size'}},
-                'action': {{0: 'batch_size'}}
+                'vector_observation': {{0: 'batch'}},
+                'continuous_actions': {{0: 'batch'}}
             }},
             verbose=False,
             dynamo=False  # Use stable legacy exporter
@@ -633,20 +653,24 @@ if __name__ == '__main__':
             .output();
         
         match output {
-            Ok(output) if output.status.success() => {
-                println!("{}", String::from_utf8_lossy(&output.stdout));
-                println!("✅ ONNX export completed successfully!");
-                
-                // Clean up script if successful
-                if std::path::Path::new(&format!("{}.onnx", path)).exists() {
-                    std::fs::remove_file(&script_path).ok();
-                }
-            }
             Ok(output) => {
-                println!("⚠️  Python conversion failed:");
-                println!("{}", String::from_utf8_lossy(&output.stderr));
-                println!("\n💡 You can run the conversion manually:");
-                println!("   python3 {}", script_path);
+                if output.status.success() {
+                    println!("{}", String::from_utf8_lossy(&output.stdout));
+                    if !output.stderr.is_empty() {
+                        println!("--- Python Warnings ---\n{}", String::from_utf8_lossy(&output.stderr));
+                    }
+                    println!("✅ ONNX export completed successfully!");
+                    
+                    if std::path::Path::new(&format!("{}.onnx", path)).exists() {
+                        std::fs::remove_file(&script_path).ok();
+                    }
+                } else {
+                    println!("⚠️  Python conversion failed:");
+                    println!("--- stdout ---\n{}", String::from_utf8_lossy(&output.stdout));
+                    println!("--- stderr ---\n{}", String::from_utf8_lossy(&output.stderr));
+                    println!("\n💡 You can run the conversion manually:");
+                    println!("   python3 {}", script_path);
+                }
             }
             Err(e) => {
                 println!("⚠️  Could not execute Python ({})", e);

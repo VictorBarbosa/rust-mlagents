@@ -1,0 +1,49 @@
+behaviors:
+  SimpleAgent:
+    trainer_type: sac
+    hyperparameters:
+      batch_size: 256
+      buffer_size: 100000
+      learning_rate: 0.0003
+      tau: 0.005
+      gamma: 0.99
+      init_entcoef: 0.2
+    network_settings:
+      hidden_units: 256
+      num_layers: 2
+      normalize: false
+    max_steps: 5000000000
+    time_horizon: 64
+    summary_freq: 5000
+    checkpoint_interval: 1000
+    keep_checkpoints: 2
+    reward_signals:
+      extrinsic:
+        strength: 1.0
+        gamma: 0.99
+env_settings:
+  env_path: "/Users/victorbarbosa/git/UNITY Web/SimpleTrain/Mac/App.app"
+  base_port: 5005
+  num_envs: 2
+  seed: -1
+  num_areas: 1
+  timeout_wait: 60
+  env_args: null
+engine_settings:
+  no_graphics: false
+  no_graphics_monitor: false
+  time_scale: 20.0
+  target_frame_rate: -1
+  capture_frame_rate: 60
+checkpoint_settings:
+  run_id: "default"
+  write_path: "/Users/victorbarbosa/git/rust_ml_agent/rust-mlagents/SimpleTrain/Assets/models"
+  run_logs_dir: "/Users/victorbarbosa/git/rust_ml_agent/rust-mlagents/SimpleTrain/Assets/models/runs"
+  resume: false
+  force: false
+  inference: false
+  maybe_init_path: null
+torch_settings:
+  device: "cpu"
+  num_threads: null
+debug: false

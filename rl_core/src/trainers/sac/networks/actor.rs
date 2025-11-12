@@ -11,6 +11,11 @@ pub struct ActorNetwork {
     mean_layer: nn::Linear,
     log_std_layer: nn::Linear,
     dtype: Kind,
+    // Unity ML-Agents compatible parameters
+    version_number: Tensor,
+    continuous_act_size_vector: Tensor,
+    is_continuous_int: Tensor,
+    memory_size_vector: Tensor,
 }
 
 impl ActorNetwork {
@@ -20,12 +25,22 @@ impl ActorNetwork {
         let mean_layer = nn::linear(vs / "mean", hidden_dim, action_dim, Default::default());
         let log_std_layer = nn::linear(vs / "log_std", hidden_dim, action_dim, Default::default());
         
+        // Unity ML-Agents compatible parameters
+        let version_number = Tensor::from(3.0).to_kind(dtype).to_device(vs.device()).set_requires_grad(false);
+        let continuous_act_size_vector = Tensor::from(action_dim as f32).to_kind(dtype).to_device(vs.device()).set_requires_grad(false);
+        let is_continuous_int = Tensor::from(1.0).to_kind(dtype).to_device(vs.device()).set_requires_grad(false);
+        let memory_size_vector = Tensor::from(0.0).to_kind(dtype).to_device(vs.device()).set_requires_grad(false);
+
         Self {
             fc1,
             fc2,
             mean_layer,
             log_std_layer,
             dtype,
+            version_number,
+            continuous_act_size_vector,
+            is_continuous_int,
+            memory_size_vector,
         }
     }
     
@@ -80,6 +95,31 @@ impl ActorNetwork {
     }
     
     pub fn get_action_deterministic(&self, obs: &Tensor) -> Tensor {
+        let (mean, _) = self.forward(obs);
+        mean.tanh()
+    }
+    
+    /// Unity ML-Agents compatible forward method for ONNX export
+    /// This method provides the exact output structure expected by Unity
+    pub fn forward_for_onnx(&self, obs: &Tensor) -> (Tensor, Tensor, Tensor, Tensor, Tensor) {
+        // Get the continuous action outputs
+        let (mean, _) = self.forward(obs);
+        let continuous_actions = mean.tanh();  // Stochastic action for training
+        let deterministic_continuous_actions = mean.tanh();  // Deterministic action for inference
+        
+        // Return the exact structure expected by Unity ML-Agents ONNX export:
+        // (version_number, memory_size, continuous_actions, continuous_act_size_vector, deterministic_continuous_actions)
+        (
+            self.version_number.shallow_clone(),
+            self.memory_size_vector.shallow_clone(),
+            continuous_actions,
+            self.continuous_act_size_vector.shallow_clone(),
+            deterministic_continuous_actions
+        )
+    }
+    
+    /// Get continuous action outputs for inference
+    pub fn get_action_for_inference(&self, obs: &Tensor) -> Tensor {
         let (mean, _) = self.forward(obs);
         mean.tanh()
     }

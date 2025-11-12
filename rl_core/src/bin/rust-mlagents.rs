@@ -121,9 +121,6 @@ async fn run_training(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         let contents = fs::read_to_string(config_path)?;
         let run_options: RunOptions = serde_yaml::from_str(&contents)?;
         
-        // Use settings from YAML if not provided via CLI
-        // (we'll pass them separately to the training loop)
-        
         (config, Some(run_options))
     } else {
         println!("⚙️  Using default SAC configuration");
@@ -133,7 +130,12 @@ async fn run_training(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     // Auto-configure dtype based on device for cross-platform compatibility
     config = config.with_device(device);
     
-    println!("\n🧠 SAC Configuration:");
+    // Extract behavior name from YAML, or use run_id as a fallback.
+    let behavior_name = yaml_settings.as_ref()
+        .and_then(|y| y.behaviors.keys().next().cloned())
+        .unwrap_or_else(|| cli.run_id.clone());
+
+    println!("\n🧠 SAC Configuration for behavior: {}", behavior_name);
     println!("   Hidden layers:  {:?}", config.hidden_layers);
     println!("   Batch size:     {}", config.batch_size);
     println!("   Buffer size:    {}", config.buffer_size);
@@ -167,7 +169,7 @@ async fn run_training(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         println!("⚠️  Inference not yet implemented");
     } else {
         println!("🚀 Starting training...\n");
-        run_training_loop(&mut sac_trainer, &cli, env_path.as_ref()).await?;
+        run_training_loop(&mut sac_trainer, &cli, env_path.as_ref(), &behavior_name).await?;
     }
     
     println!("\n✅ Training completed successfully!");
@@ -180,6 +182,7 @@ async fn run_training_loop(
     sac_trainer: &mut SACTrainer,
     cli: &Cli,
     env_path: Option<&PathBuf>,
+    behavior_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("🎮 Training Configuration:");
     println!("   Base Port:      {}", cli.base_port);
@@ -196,7 +199,7 @@ async fn run_training_loop(
         
         // Connect to Unity
         println!("🔌 Connecting to Unity environment...");
-        match run_unity_training(unity_path, cli, sac_trainer).await {
+        match run_unity_training(unity_path, cli, sac_trainer, behavior_name).await {
             Ok(_) => {
                 println!("✅ Unity training completed successfully!");
             }
@@ -266,11 +269,11 @@ async fn run_training_loop(
             
             // Save checkpoint based on steps (ML-Agents style)
             if total_steps >= next_checkpoint_step {
-                let checkpoint_path = cli.get_checkpoint_path().join(format!("3DBall-{}.pt", total_steps));
+                let checkpoint_path = cli.get_checkpoint_path().join(format!("{}-{}.pt", behavior_name, total_steps));
                 sac_trainer.save_checkpoint(checkpoint_path.to_str().unwrap())?;
                 
                 // Export ONNX with same name
-                let onnx_path = cli.get_checkpoint_path().join(format!("3DBall-{}", total_steps));
+                let onnx_path = cli.get_checkpoint_path().join(format!("{}-{}", behavior_name, total_steps));
                 sac_trainer.export_onnx(onnx_path.to_str().unwrap())?;
                 println!("✓ Checkpoint & ONNX saved at step {}", total_steps);
                 
@@ -280,10 +283,10 @@ async fn run_training_loop(
         
         // Final save
         println!("💾 Saving final checkpoint...");
-        let final_path = cli.get_checkpoint_path().join(format!("3DBall-{}.pt", total_steps));
+        let final_path = cli.get_checkpoint_path().join(format!("{}-{}.pt", behavior_name, total_steps));
         sac_trainer.save_checkpoint(final_path.to_str().unwrap())?;
         
-        let final_onnx_path = cli.get_checkpoint_path().join(format!("3DBall-{}", total_steps));
+        let final_onnx_path = cli.get_checkpoint_path().join(format!("{}-{}", behavior_name, total_steps));
         sac_trainer.export_onnx(final_onnx_path.to_str().unwrap())?;
         println!("✅ Final checkpoint & ONNX saved at step {}", total_steps);
         
@@ -349,7 +352,7 @@ fn load_config_from_yaml(path: &std::path::Path) -> Result<SACConfig, Box<dyn st
     };
     
     // Convert to SACConfig
-    let mut config = SACConfig {
+    let config = SACConfig {
         hidden_layers: vec![trainer_settings.network_settings.hidden_units as i64; trainer_settings.network_settings.num_layers],
         batch_size: sac_hyperparams.batch_size,
         buffer_size: sac_hyperparams.buffer_size,
@@ -377,6 +380,7 @@ async fn run_unity_training(
     unity_path: &PathBuf,
     cli: &Cli,
     sac_trainer: &mut SACTrainer,
+    behavior_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use rl_core::env::unity_env::UnityEnvironment;
     use rl_core::trainers::sac::Transition;
@@ -422,7 +426,7 @@ async fn run_unity_training(
         let mut episode_reward = 0.0;
         let mut episode_steps = 0;
         
-        for step in 0..max_steps_per_episode {
+        for _step in 0..max_steps_per_episode {
             // Get action from SAC
             let action = sac_trainer.select_action_from_vec(&obs);
             
@@ -477,11 +481,11 @@ async fn run_unity_training(
         // Save checkpoint periodically based on STEPS (ML-Agents style)
         if total_steps >= next_checkpoint_step {
             println!("💾 Saving checkpoint at step {}...", total_steps);
-            let checkpoint_path = cli.get_checkpoint_path().join(format!("3DBall-{}.pt", total_steps));
+            let checkpoint_path = cli.get_checkpoint_path().join(format!("{}-{}.pt", behavior_name, total_steps));
             sac_trainer.save_checkpoint(checkpoint_path.to_str().unwrap())?;
             
             // Export ONNX with same name (ML-Agents does this automatically)
-            let onnx_path = cli.get_checkpoint_path().join(format!("3DBall-{}", total_steps));
+            let onnx_path = cli.get_checkpoint_path().join(format!("{}-{}", behavior_name, total_steps));
             sac_trainer.export_onnx(onnx_path.to_str().unwrap())?;
             println!("✓ Checkpoint saved at step {}: {}.pt", total_steps, checkpoint_path.display());
             println!("✓ ONNX exported: {}.onnx", onnx_path.display());
@@ -494,11 +498,11 @@ async fn run_unity_training(
     println!();
     println!("💾 Saving final checkpoint...");
     let final_step = total_steps;
-    let final_path = cli.get_checkpoint_path().join(format!("3DBall-{}.pt", final_step));
+    let final_path = cli.get_checkpoint_path().join(format!("{}-{}.pt", behavior_name, final_step));
     sac_trainer.save_checkpoint(final_path.to_str().unwrap())?;
     
     // Export final ONNX (ML-Agents style: same name as checkpoint)
-    let final_onnx_path = cli.get_checkpoint_path().join(format!("3DBall-{}", final_step));
+    let final_onnx_path = cli.get_checkpoint_path().join(format!("{}-{}", behavior_name, final_step));
     sac_trainer.export_onnx(final_onnx_path.to_str().unwrap())?;
     
     println!("✅ Final checkpoint saved: {}.pt", final_path.display());

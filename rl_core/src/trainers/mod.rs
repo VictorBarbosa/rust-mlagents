@@ -10,6 +10,7 @@ pub mod agent_processor;
 pub mod buffer;
 pub mod stats;
 pub mod tensorboard;
+pub mod checkpoint;
 
 // SAC Implementation
 pub mod sac;
@@ -18,3 +19,4 @@ pub use learn::{run_training, run_cli, parse_command_line};
 pub use trainer_controller::TrainerController;
 pub use settings::RunOptions;
 pub use tensorboard::TensorBoardWriter;
+pub use checkpoint::{CheckpointManager, Checkpointable};

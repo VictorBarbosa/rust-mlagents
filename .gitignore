@@ -17,3 +17,12 @@ target/
 target
 ./**/.keep
 results/*/**/*.pt
+./**/*.o
+./**/*.dll
+./**/*.gbc
+./SimpleTrain/Library/
+SimpleTrain/Library/Artifacts/
+SimpleTrain/Library/Bee/
+./SimpleTrain/Library/Artifacts/
+./SimpleTrain/Library/Bee/
+./results/ 
