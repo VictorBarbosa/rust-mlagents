@@ -4,6 +4,7 @@ pub mod networks;
 pub mod replay_buffer;
 pub mod trainer;
 pub mod onnx_export;
+pub mod observation_spec;
 // pub mod unity_env;  // TODO: Fix Unity integration
 
 #[cfg(test)]
@@ -15,4 +16,5 @@ pub use networks::{ActorNetwork, CriticNetwork};
 pub use replay_buffer::{ReplayBuffer, Transition, Batch};
 pub use trainer::{SACTrainer, SACMetrics};
 pub use onnx_export::ONNXExporter;
+pub use observation_spec::{ObservationSpec, RayPerceptionSpec};
 // pub use unity_env::{UnityEnvironment, UnityTrainer};  // TODO: Fix Unity integration

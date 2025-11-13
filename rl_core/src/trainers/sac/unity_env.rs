@@ -1,5 +1,5 @@
 // Unity Environment Integration for SAC
-use super::{SACTrainer, Transition};
+use super::{SACTrainer, Transition, ObservationSpec};
 use crate::old::grpc_server::GrpcServer;
 use tch::{Tensor, Device};
 
@@ -82,7 +82,7 @@ pub struct InitConfig {
 pub struct UnityEnvironment {
     server: GrpcServer,
     behavior_name: String,
-    obs_dim: usize,
+    obs_spec: Option<ObservationSpec>,  // Detectado na primeira observação
     action_dim: usize,
     device: Device,
 }
@@ -102,18 +102,21 @@ impl UnityEnvironment {
         let init_output = server.initialize(init_config).await?;
         
         // Extract behavior specs from initialization
-        let (behavior_name, obs_dim, action_dim) = Self::extract_specs(&init_output)?;
+        let (behavior_name, action_dim) = Self::extract_specs(&init_output)?;
+        
+        println!("🔗 Unity connected: behavior '{}', {} continuous actions", behavior_name, action_dim);
+        println!("🔍 Waiting for first observation to detect sensor configuration...");
         
         Ok(Self {
             server,
             behavior_name,
-            obs_dim,
+            obs_spec: None,  // Será detectado na primeira observação
             action_dim,
             device,
         })
     }
     
-    fn extract_specs(output: &UnityRlOutputProto) -> Result<(String, usize, usize), String> {
+    fn extract_specs(output: &UnityRlOutputProto) -> Result<(String, usize), String> {
         if let Some(init) = &output.rl_initialization_output {
             if let Some(brain_params) = init.brain_parameters.first() {
                 let behavior_name = brain_params.brain_name.clone();
@@ -125,10 +128,7 @@ impl UnityEnvironment {
                     return Err("No action spec found".to_string());
                 };
                 
-                // Get observation dimensions (will be determined from first step)
-                let obs_dim = 0; // Will be updated on first observation
-                
-                Ok((behavior_name, obs_dim, action_dim))
+                Ok((behavior_name, action_dim))
             } else {
                 Err("No brain parameters found".to_string())
             }
@@ -191,21 +191,38 @@ impl UnityEnvironment {
         Ok((obs, reward, done))
     }
     
-    fn extract_observation(&self, output: &UnityOutputProto) -> Result<Vec<f32>, String> {
+    fn extract_observation(&mut self, output: &UnityOutputProto) -> Result<Vec<f32>, String> {
         if let Some(rl_output) = &output.rl_output {
             if let Some(agent_list) = rl_output.agent_infos.get(&self.behavior_name) {
                 if let Some(agent_info) = agent_list.value.first() {
-                    if let Some(obs) = agent_info.observations.first() {
-                        // Flatten observation
-                        let flat_obs: Vec<f32> = obs.float_data.compressed_data.clone();
-                        
-                        // Update obs_dim if needed
-                        if self.obs_dim == 0 {
-                            // This is hacky but necessary for first observation
-                            // In production, should be done differently
+                    // Extrair todas as observações (vector, ray perception, etc)
+                    let observations: Vec<Vec<f32>> = agent_info.observations
+                        .iter()
+                        .map(|obs| obs.float_data.compressed_data.clone())
+                        .collect();
+                    
+                    // Detectar spec na primeira observação
+                    if self.obs_spec.is_none() {
+                        let spec = ObservationSpec::detect_from_observations(&observations);
+                        spec.print_info();
+                        self.obs_spec = Some(spec);
+                    }
+                    
+                    // Validar se configuração mudou
+                    if let Some(spec) = &self.obs_spec {
+                        if !spec.matches(&observations) {
+                            println!("⚠️  WARNING: Observation configuration changed!");
+                            println!("   Expected: {} dimensions", spec.total_obs_size);
+                            println!("   Received: {} dimensions", observations.iter().map(|o| o.len()).sum::<usize>());
                         }
                         
-                        return Ok(flat_obs);
+                        // Flatten todas as observações em um único vetor
+                        return Ok(spec.flatten_observations(&observations));
+                    }
+                    
+                    // Fallback: se spec ainda não existe, retorna primeira obs
+                    if let Some(first_obs) = observations.first() {
+                        return Ok(first_obs.clone());
                     }
                 }
             }
@@ -233,11 +250,19 @@ impl UnityEnvironment {
     }
     
     pub fn get_obs_dim(&self) -> usize {
-        self.obs_dim
+        self.obs_spec.as_ref().map(|s| s.total_obs_size).unwrap_or(0)
     }
     
     pub fn get_action_dim(&self) -> usize {
         self.action_dim
+    }
+    
+    pub fn get_obs_spec(&self) -> Option<&ObservationSpec> {
+        self.obs_spec.as_ref()
+    }
+    
+    pub fn has_ray_perception(&self) -> bool {
+        self.obs_spec.as_ref().map(|s| s.has_ray_perception).unwrap_or(false)
     }
 }
 
@@ -268,7 +293,34 @@ impl UnityTrainer {
     
     pub async fn train(&mut self) -> Result<(), String> {
         println!("🚀 Starting SAC training with Unity environment");
-        println!("   Obs dim: {}, Action dim: {}", self.env.get_obs_dim(), self.env.get_action_dim());
+        
+        // Reset to detect observation spec
+        let _ = self.env.reset().await?;
+        
+        let obs_dim = self.env.get_obs_dim();
+        let action_dim = self.env.get_action_dim();
+        
+        println!("\n🤖 Training Configuration:");
+        println!("   └─ Total observation size: {} dimensions", obs_dim);
+        println!("   └─ Action size: {} dimensions", action_dim);
+        
+        if let Some(spec) = self.env.get_obs_spec() {
+            if spec.has_ray_perception {
+                println!("   └─ ✅ RayPerception sensors detected: {} sensor(s)", spec.ray_perception_specs.len());
+            } else {
+                println!("   └─ Vector observations only (no RayPerception)");
+            }
+        }
+        
+        // Validar dimensões do modelo
+        if self.sac.obs_dim as usize != obs_dim {
+            return Err(format!(
+                "Model observation size mismatch! Model: {}, Unity: {}",
+                self.sac.obs_dim, obs_dim
+            ));
+        }
+        
+        println!();
         
         let mut episode = 0;
         let mut step_count = 0;

@@ -592,7 +592,7 @@ def main():
             export_params=True,
             opset_version=11,
             do_constant_folding=True,
-            input_names=['vector_observation'],
+            input_names=['vector_observation'],  # Unity ML-Agents expects this name
             output_names=[
                 'version_number',
                 'memory_size',
